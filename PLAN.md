@@ -1,261 +1,318 @@
-# Sheetz roadmap
+# Plan: Enclave
 
-Guiding principle: build features in the order people actually use a
-spreadsheet. Roughly 90% of the time goes on formatting, navigation, basic
-formulas, sort/filter and charts — that's v0.2–v0.4. Pivot tables and
-automation are the long tail.
+Enclave is an **MCP-driven product suite for SMBs** on a private
+company network. The products:
 
-"IC" notes what the IronCalc engine already provides vs. what we build.
+| Product | What it is |
+|---|---|
+| **enclaved** | the private network client — built |
+| **Post** | mail |
+| **Almanac** | calendar |
+| **Commons** | team chat + calls |
+| **Scribe** | documents |
+| **Ledger** | spreadsheets (repo `grido/`) |
+| **Bursar** | accounting |
+| **Depot** | everyone's own share, read-only for the others |
+| **Vault** | team passwords |
+| **Podium** | presentations |
+| **agent layer** | the skills + MCP glue that spans them |
 
-## Architecture (done)
+The catch that sets the suite apart: the user's own agent is the
+primary interface; each product's UI exists for manual use, not as the
+main door. "Show me today's summary" returns calendar + email
+overviews; "reply to X", "join my next call", "open the attachment and
+fix it" all work from the agent chat, with meeting reminders landing
+in that same single UI. The enclave — the private tailnet-per-company
+network — is the trust spine underneath: who you are, which computers
+are yours, who your colleagues are.
 
-- [x] **Split the monolith** — `engine.rs` (all IronCalc access, plain-typed
-      API), `state.rs` (app state), `app.rs` (update loop + command dispatch),
-      `ui/{grid,ribbon,editor,dialogs,charts}.rs`. UI never imports ironcalc.
-- [x] **Command registry** — ~100 named commands, every one bindable.
-- [x] **Keymap** — the full standard set in `keymap.toml`, plus an in-app
-      shortcut viewer (F1).
+## The products
 
-## v0.2 — Looks like a spreadsheet (formatting & structure)
+Named as places inside the enclave, always branded with the house mark
+(“Enclave Post”, “Enclave Ledger”, …):
 
-- [x] **Render cell styles** — bold/italic/underline/strike, font size, text
-      and fill color, borders, horizontal + vertical alignment.
-- [x] **Edit basic styles** — ribbon Home group with live toggle states.
-- [x] **Number format UI** — General, currency, percent, comma, date,
-      increase/decrease decimals.
-- [x] **Insert/delete rows & columns** — with reference adjustment (IC).
-- [x] **Autofit column width** — double-click or ribbon.
-- [x] **Right-click context menu** — cut/copy/paste, insert/delete, clear,
-      format.
-- [x] **Sheet management** — new, rename (double-click tab), delete,
-      duplicate, reorder.
-- [x] **Clear** — contents / formats / all.
-- [x] **Column/row resize by dragging** header edges, with resize cursors and
-      double-click-to-autofit; header click/drag selects whole rows/columns.
-- [x] **Merged cells** — existing merges render as one cell and select as a
-      unit. *Creating* merges is blocked upstream: IronCalc exposes merged
-      regions for reading only.
-- [x] **Freeze panes** — frozen rows/columns painted as a pinned overlay with
-      a stronger boundary line, and reported in the status bar.
+1. **enclaved** — the network client. Built. Identity, reachability,
+   file drop, and the agent surface (enclave-mcp).
+2. **Post** — mail: an MCP bridge to the company's existing provider
+   (Gmail / Microsoft 365): overview, read, reply, attachments. Plus a
+   **simple email client** for when the user wants to work manually —
+   a client only, never a hosted mail service.
+3. **Almanac** — calendar: same bridge model, its own product: today's
+   meetings, reminders, call links to click or have the agent join.
+   Like every product, it has its own manual UI.
+4. **Commons** — a simplified Slack with Zoom-like calls among
+   enclave members. Serverless: messages are append-only logs in a
+   `Chat/` folder inside each member's Enclaved folder, replicated
+   machine-to-machine over the enclave; an offline member catches up
+   from any online peer that has the history (gossip, no server copy).
+   Calls are live P2P — nothing to store.
+5. **Scribe** — our own document product, **docx native** (read/write
+   .docx directly, as grido does .xlsx — attachments from outside
+   open without conversion), with the MCP surface built in — so the agent can edit a
+   document and attach it to an email, and the human gets a real
+   editor when they want one.
+6. **Ledger** — the spreadsheet: fast native xlsx editor (Rust,
+   IronCalc + egui; repo `grido/`, already in this folder); gets its
+   MCP surface so the agent can read and edit workbooks too.
+7. **Bursar** — accounting for the small company, basic by design:
+   bookkeeping, invoices in and out, expenses, and producing/sending
+   the recurring reports (VAT, annual figures) — the agent can draft
+   the report, the human approves, it goes out.
+8. **Depot** — shared storage without a shared copy: every member
+   has their **own share folder on their own machine**, and the rest
+   of the enclave can browse, read, and fetch it — **read-only** —
+   whenever that machine is online. Only the owner writes; files live
+   only where their owner put them. No cloud copy, no replication, no
+   sync conflicts, nothing propagates deletes, and nobody can touch
+   your files. The trade-off is availability: a share is offline when
+   its owner's machine is. To hand someone an editable copy, they
+   fetch it (or you drop it) — then it's theirs.
+9. **Vault** — team passwords and shared secrets, end-to-end
+   encrypted and replicated to every member's machine (tiny data —
+   full replication is right here, unlike Depot); membership in the
+   enclave is what grants access.
+10. **Podium** — presentations: the third leg of the office trio next
+    to Scribe and Ledger, MCP surface included so the agent can build
+    and edit decks.
+11. **The agent layer** — not an app: the suite's skills + MCP
+   registrations, installed once, that let the user's own agent span
+   the products — "today's summary" (calendar + email in one answer),
+   "check X's reply, open the attachment for editing" (Post → Scribe).
+   The user's default agent chat is the single UI; we ship the tools,
+   not the agent.
+12. **Reminders ride enclaved** — the one always-running daemon.
+   It already notifies on file drops; it also fires meeting reminders
+   (from Almanac's data) as desktop notifications, and exposes
+   them to the agent.
 
-## v0.3 — Edits like a spreadsheet should (clipboard, fill, find)
+Every product ships with its MCP server. The benchmark sentence the
+suite must satisfy: *"check the emails from X, see if he has feedback
+on what I sent; if he does, open the attachment for editing."*
 
-- [x] **Formula-aware clipboard** — internal copy/paste keeps formulas, styles
-      and adjusts relative references; cut marks the source; external apps
-      still get TSV (IC).
-- [x] **Paste values only** — Ctrl+Shift+V.
-- [x] **Enter-mode vs Edit-mode** — typing then arrow commits and moves; F2
-      then arrow moves the caret.
-- [x] **Find & Replace** — Ctrl+F/H, match case, all-sheets, find next/prev,
-      replace all.
-- [x] **Undo/redo** — covers edits, styles, structure (IC history).
-- [x] **Fill handle** — the drag-corner on the selection, with a preview
-      outline; fills down/right through the engine's series logic.
-- [x] **F4 reference cycling** — A1 → $A$1 → A$1 → $A1 while editing.
-- [x] **Click-to-reference while editing a formula**, with each distinct
-      reference in the formula given its own highlight color.
+Use-case coverage:
 
-## v0.4 — Works with data (sort, filter, formulas UX)
+- Today's summary (calendar + email) → Almanac + Post + agent layer.
+- Read/reply email from the agent chat → Post.
+- See calls, click the link, or "join my next one" → Almanac (call
+  links; the agent opens the link).
+- Meeting reminders in the single UI → enclaved notifications + agent
+  layer.
+- Team chat, calls, sharing → Commons (+ enclaved file drop).
+- "Open a docx, edit, save, email to X" → Scribe + Post.
+- "Check X's feedback, open the attachment" → Post + Scribe + agent
+  layer.
+- Spreadsheets in the same loop → Ledger.
+- Basic accounting, sending in reports → Bursar (+ Post to send).
+- Reach a colleague's shared files → Depot.
+- Team passwords → Vault.
+- Decks → Podium.
 
-- [x] **Sort** — ascending/descending on the selection or surrounding block,
-      with header detection; plus a sort dialog.
-- [x] **Named ranges** — name manager (add/list/delete).
-- [x] **Go To** — Ctrl+G / F5 and a working Name Box.
-- [x] **Selection stats** — Sum / Average / Count in the status bar.
-- [x] **AutoFilter** — header dropdown buttons opening a searchable value
-      checklist; non-matching rows are hidden.
-- [x] **Formula autocomplete** — function-name popup while typing, Up/Down to
-      choose, Tab/Enter to accept.
-- [x] **Multi-key sort** — up to three levels, ascending/descending each,
-      blanks last.
-- [ ] **Data validation** — dropdown lists first
-- [ ] **Multi-range selection** — Ctrl+click disjoint ranges
+Suite architecture (settled):
 
-## v0.5 — Shows data (visual layer)
+- **One app to the user: one install, one daemon, one MCP.** The suite
+  ships as a single install artifact per platform containing two
+  binaries side by side (macOS: both inside `Contents/MacOS/`, signed
+  and notarized together — no extract-at-runtime tricks, which
+  Gatekeeper and corporate AV punish): the Rust app (tray + product
+  UIs) and the Go daemon. One `enclave-mcp`, registered once at
+  install, exposes every product's tools through the daemon's local
+  socket.
+- **Every UI / desktop app is Rust** (egui, as grido already proves
+  out). The current Fyne tray moves to Rust with it.
+- **The tray is the launcher.** Every product's manual UI starts from
+  the tray app's context menu (Post, Almanac, Commons, …) — one place
+  to find the suite, no separate dock icons or start-menu clutter to
+  hunt through. Products can also open via the agent ("open the
+  attachment in Scribe") and OS file associations where they fit.
+  Each product additionally appears in the OS app search (Spotlight /
+  Start menu / .desktop) as a launcher stub — "Enclave Post.app" etc.
+  — that just opens its window in the one app, so cmd+space finds the
+  suite too.
+- **The daemon stays Go, thin.** It is the network (tsnet exists only
+  in Go), the local socket, and the headless product modules. A Rust
+  rewrite was considered and rejected: tsnet's value is Tailscale's
+  battle-tested NAT traversal (disco, DERP) plus the headscale
+  protocol, and no mature Rust crate implements either — revisit only
+  if one appears; the socket API already isolates the suite from that
+  choice.
+- **Autostart owns the daemon, not the UI**: the systemd user unit /
+  launchd agent points straight at the daemon binary,
+  `Restart=always` (as today). The UI dials the socket, pings, and
+  only spawns the daemon if the socket is dead; the socket bind is
+  the single-instance lock.
+- **Version handshake**: the socket API gets a `version` op. Updates
+  replace the whole install dir atomically; after an update the UI
+  notices the mismatch and asks the daemon to restart itself, so UI
+  and daemon always run as a matched pair.
 
-- [x] **Conditional formatting** — cell-value rules and color scales via a
-      dialog; rendering comes through the engine's extended styles, so rules
-      loaded from a real .xlsx paint correctly too.
-- [x] **Charts (native)** — bar / line / pie drawn with the egui painter in
-      floating windows over the sheet.
-- [x] **Zoom** — Ctrl+scroll, ribbon buttons, status-bar readout.
-- [x] **Toggle gridlines**.
-- [x] **Data bars** — painted behind cell text from the engine's evaluated
-      conditional formatting.
-- [ ] **Charts in xlsx** — reading/writing chart XML so charts survive a round
-      trip; native charts are view-only today
-- [ ] **Comments/notes**, **hyperlinks**
+- **@-addressing, one scheme everywhere.** Enclave members and their
+  computers are addressed as `@person` (their email or the part before
+  its @; resolves to their one online computer, ambiguity is an error
+  naming the options) and `@person/computer` for a specific machine.
+  The scheme is baked into the MCP tool descriptions so any agent chat
+  resolves "send this to @ale" — and Commons uses the same mentions
+  with real autocomplete. UX rule: an address means the same thing in
+  every product and in the agent.
 
-## v0.6 — LLM-operable, live (MCP)
+- **Mobile: one native app, many features** — same model as desktop.
+  A single native app per platform (iOS, Android) that joins the
+  phone to the enclave and carries the suite's mobile-worthy faces:
+  Commons chat + calls, meeting reminders, Post/Almanac overviews,
+  Vault, browsing colleagues' Depot shares, receiving drops. Not a
+  port of the editors — the phone is for reaching, reading, and
+  replying.
 
-The goal: a non-technical person talks to Claude/GPT ("log that I applied to
-Acme today", "which applications haven't replied in two weeks?") and watches
-their real spreadsheet update in front of them. The assistant maintains the
-file over months; the human stays in control and can always undo.
+Process: one project, one codebase. Each product has a plan file
+here — PLAN-enclaved.md, PLAN-post.md, PLAN-almanac.md,
+PLAN-commons.md, PLAN-scribe.md, PLAN-ledger.md, PLAN-bursar.md,
+PLAN-depot.md, PLAN-vault.md, PLAN-podium.md, PLAN-mobile.md —
+implementation is then delegated to Opus 5 agents.
 
-That rules out a headless server: the model edits **the workbook already open
-in the GUI**, and every change is visible immediately.
+Risks (open, with the current answer):
 
-### Transport — the live bridge
+- **Total machine loss** → offsite backup for a separate fee:
+  E2E-encrypted object storage (only the enclave holds keys — the
+  provider sees ciphertext), versioned with Time Machine-style
+  recovery: browse back in time, restore a file, a folder, or the
+  machine's Enclave data wholesale. Remains: companies that skip the
+  fee have no net.
+- **Prompt injection at the agent** → read tools run freely; acting
+  tools (send file, send mail, delete) make the *daemon* pop a native
+  confirm dialog, so a hijacked agent can never both decide and
+  approve. Per-action allowlists are opt-in. Remains: a hostile email
+  can still mislead the human into approving.
 
-**Requirement: launching Sheetz normally — from the desktop launcher, a file
-manager, anywhere — is the only step.** No terminal, no flag, no separate
-daemon to remember. A CLI entry point may exist, but nothing may *depend* on
-the user typing it.
+Pricing (settled): **€10 per member per month**, everything included,
+billed per enclave via the control server. Offsite backup is the one
+add-on: **+€5 per member per month** with a clear storage allowance.
+Round numbers, one invoice, no per-product nickel-and-diming.
 
-MCP clients launch a server and speak newline-delimited JSON-RPC 2.0 over
-stdio, so the running GUI can't be the server directly (its stdio isn't the
-client's). Hence a socket the GUI always holds, plus a shim that bridges to it.
+## The network
 
-- [x] **Socket server starts with the app, unconditionally** — spawned during
-      startup, not behind a flag or subcommand, so a launcher start is fully
-      equivalent to a terminal start.
-- [x] **Socket path and liveness** — `$XDG_RUNTIME_DIR/sheetz.sock`, falling
-      back to `/tmp/sheetz-$UID.sock` (a launcher's environment is thinner than
-      a shell's, so nothing may assume shell-only variables). On startup, try
-      connecting to an existing socket first: if it answers, another instance
-      is primary and this one serves nothing; if it refuses, the file is stale
-      — unlink and bind. Remove it on clean exit.
-- [x] **Commands marshalled onto the UI thread** — the socket thread sends a
-      request plus a reply channel; `update()` drains the queue, applies it to
-      the `Engine` and replies. `Context::request_repaint()` (Send + Sync) wakes
-      the loop, so edits land even while the app sits idle.
-- [x] **`sheetz mcp` stdio shim** — the tiny binary the MCP client launches.
-      Proxies stdio to the socket; if nothing is listening it starts the GUI
-      itself and waits for the socket, so an assistant-first flow works too.
-- [x] Protocol layer: `initialize`, `ping`, `tools/list`, `tools/call`, tool
-      failures as `isError` results rather than protocol errors. Hand-rolled,
-      no framework (the shape is proven in viode's `viode-mcp`).
-- [x] Tests covering the protocol surface: schemas, initialize, tools/list,
-      notifications, malformed input, and tool failures arriving as `isError`
-      results. The socket and GUI halves are exercised by driving the real
-      binary with an MCP client script.
+Private tailnet-per-company networking. Two pieces:
 
-### Registration — the other half of "no terminal commands"
+- **enclave-control** (`server/`, Go) — control server: admin dashboard,
+  invites, embedded Headscale. ✅ built.
+- **enclaved** (`enclaved/`, Go + Fyne) — the client: a system tray app
+  owning this machine's tailnet nodes and file drops. ✅ built.
 
-A running socket is useless if the assistant doesn't know Sheetz exists.
-Registering an MCP server normally means hand-editing a client's JSON config,
-which is precisely the step being ruled out — so Sheetz does it:
+An account can be part of **multiple enclaves** (companies). **Computers
+appear on enclaves, never apps** — one tailscale node per (machine, enclave),
+owned by enclaved.
 
-- [x] **Installer registers the server** — `packaging/install.sh` adds the
-      `sheetz` entry (pointing at `sheetz mcp`) to the MCP client configs it
-      finds, merging into existing JSON rather than overwriting it, and
-      leaving a backup.
-- [x] **In-app "Connect to assistant"** — a File/backstage action that does the
-      same registration on demand and reports what it wrote, for people who
-      installed some other way or added a client later. This is the path a
-      non-technical user actually takes.
-- [x] **Status readout** — the backstage shows whether the socket is listening,
-      whether this instance is the primary, and which clients are registered,
-      so "why can't Claude see my sheet?" is answerable without a terminal.
-- [x] `.mcp.json` in the repo for development use.
-- [x] **Registration happens at app startup** — running Sheetz is genuinely the
-      only requirement. No installer step, no `register` command needed, no
-      hand-edited JSON. Idempotent: once the entry is right nothing is
-      rewritten, key order is preserved and a `.bak` is kept.
-- [x] **A skill teaching the tools** — `~/.claude/skills/sheetz/SKILL.md`,
-      written at startup like the registration. Tool schemas say what the
-      arguments are; the skill says how to *work*: look before writing, prefer
-      records over coordinates, write formulas not constants, and leave undo,
-      backups, autosave and confirmations to Sheetz. The same guidance goes out
-      condensed as MCP `initialize` instructions, so clients without skills
-      still get it.
+### Decisions (settled)
 
-### Tools the assistant needs
+- **Server built on `~/dev/go/go-app-template`** — layout, conventions,
+  `__okf/`, check.sh, Kamal + Litestream deploy. SQLite (headscale supports
+  nothing else self-contained; two DB files on `/data`, both replicated).
+- **Headscale v0.29.3 embedded in-process**, driven over its gRPC unix
+  socket. One public port; reverse proxy to headscale on loopback; `/v1/*`
+  blocked; embedded DERP advertises the public host (TLS via kamal-proxy),
+  STUN on UDP 3478.
+- **Company isolation is an ACL**: one headscale user per company + static
+  `autogroup:member → autogroup:self:*` policy. Verified: same-company nodes
+  ping, cross-company nodes don't even see each other.
+- **Admin signs in with OAuth** (Google/GitHub, template auth: code+PKCE,
+  sealed-cookie sessions; `GET /auth/dev?email=` in development). Dashboard:
+  create enclaves, add people, copy invite links, remove members.
+- **The admin delivers invites personally. The server sends no email.**
+  Adding a person creates their account + membership immediately; the invite
+  (single-use, 7 days, bound to that person) only hands a machine its
+  session. The raw link is shown once on the dashboard.
+- **Joining is paste-a-code, not deep links.** The invite link opens a public
+  page: which enclave, download links, and the invite code (the token) as a
+  click-to-copy field. The employee pastes it into enclaved's join window.
+  Deep links rejected: tray apps can't reliably own a URL scheme across the
+  three platforms and the failure mode is silent.
+- **enclaved is Go + tsnet + Fyne**: a system tray app, autostarts at login.
+  It owns per-enclave nodes and state, listens on the drop port, lands
+  accepted files in `~/Enclave/Received` — the computer is reachable
+  whenever it is awake, no window open.
+- **Two session kinds.** Admin browser: sealed cookies, no table. Machines:
+  hashed Bearer tokens (`sessions`), minted by invite redemption, spanning
+  all the account's enclaves. Removing a member from one enclave kicks only
+  that enclave's nodes; sessions and other memberships survive.
 
-Raw cell addressing is not enough — asking a model to compute "row 14, column
-D" is where it will make mistakes. Sheets that hold records get record-shaped
-tools on top of the cell-level ones.
+### Server: enclave-control ✅
 
-- [x] **Discovery** — `workbook_info` (sheets, used ranges, dirty state, path),
-      `sheet_read` returning a *window* with values and optionally formulas.
-      Hard cap the cell count and default to the used range; a naive
-      "read the sheet" on a million rows must be impossible.
-- [x] **Cell level** — `cell_set`, `range_set`, `range_format`,
-      `rows_insert/delete`, `cols_insert/delete`, `sheet_add/rename/delete` —
-      one-liners over `engine.rs`.
-- [x] **Record level** — treat a header row as a schema: `table_schema`,
-      `table_append(record)`, `table_find(criteria)`, `table_update(match,
-      changes)`. This is what makes "mark the Acme application as rejected"
-      reliable instead of a guess about coordinates.
-- [x] **Templates** — `workbook_from_template("job-applications" | "budget" |
-      …)`: headers, formats, freeze, filter, a couple of summary formulas. Gets
-      a useful file existing in one turn.
-- [x] **Query** — `stats`, `find`, `sort_range`, `filter` so the model can
-      answer questions without dragging the whole sheet into its context.
+Template layout + `internal/tailnet` (embedded headscale), `internal/token`,
+`internal/api`, `internal/account`, `internal/company`, `internal/machine`,
+pages (login, dashboard, join, download). Tables: accounts (email + optional
+OAuth identity), companies (↦ headscale user), memberships (many-to-many,
+owner|member), invites (account-bound, hashed, single-use), sessions
+(machine Bearer), machines (preauth key ↦ account — how peers get colleague
+names and removal finds nodes).
 
-### Trust, safety and visibility
+Routes: see `server/__okf/api/`. Machine API: `POST /join` (invite → session),
+`GET /me`, `POST /machines/register` (→ 1-hour single-use preauth key),
+`GET /machines`. Admin: dashboard forms. Public: `/join/{token}`, `/download`.
 
-The point of doing this in a visible GUI is that the human stays in the loop.
+Verified end to end: dashboard flow, single-use invites, real tailscale nodes
+registering, same/cross-enclave ACLs, per-enclave member removal.
 
-- [x] **Change highlighting** — cells the assistant just wrote get a temporary
-      tint that fades, so you can see what it touched at a glance.
-- [x] **Activity log** — a side panel listing each tool call in plain English
-      ("added row 12: Acme, Applied, 2026-08-30"), with the range it touched.
-- [x] **One tool call = one undo step** — done at the app layer: the engine
-      counts the undo entries a batch produced and `undo_grouped` pops them
-      together. IronCalc keeps its history private with no grouping API, so
-      collapsing them *inside* the engine stays blocked upstream.
-- [x] **Destructive operations gated** — deleting sheets, clearing ranges or
-      overwriting non-empty blocks prompt for confirmation in the UI (or are
-      refused in an unattended mode). The model must not be able to quietly
-      destroy a year of records.
-- [x] **Edit conflicts** — refuse (with a clear error the model can act on)
-      while the user has a cell editor open, rather than yanking it away.
-- [x] **Save policy** — debounced autosave after assistant edits, since the
-      target user will not think to press Ctrl+S; explicit `workbook_save` too,
-      and never silently discard the human's unsaved work.
-- [x] **Backups** — keep the previous version alongside the file before the
-      first assistant write of a session. Cheap insurance for a file someone
-      maintains for months.
+### enclaved (the client) ✅
 
-### Engine gaps this needs first
+Go + Fyne system tray app, one binary, all platforms. Grey icon = not
+connected, green = connected. No CLI, no local web UI — the tray and its
+small windows are the whole interface.
 
-- [x] Make `parse_a1_range` public — tools should take `"B2:D9"`, not integers.
-- [x] `read_range` returning a value grid in one call.
-- [x] Sheet lookup by name, since tools take names and the engine takes indices.
-- [x] Transaction begin/end around a batch of edits — batches the recalc (one
-      evaluation per tool call) and counts undo steps for the grouping above.
+- Menu, not joined: "Join an enclave…" (paste window, opens automatically on
+  first run). Joined: account line, per enclave "Name — connected /
+  disconnected" with Connect/Disconnect, "Send a file…", "Open received
+  files", "Join another enclave…".
+- **Disconnect is local only**: the machine stays on the enclave until the
+  admin removes it in the dashboard; Connect brings it back, no new invite.
+- Multi-enclave: one tsnet node per enclave, state under
+  `~/.local/share/enclave/`, membership poll picks up enclaves the admin
+  adds later.
+- File drop on port 40404: JSON header → accept byte → stream →
+  `~/Enclaved/<sending-computer>/`, accepted by default with a desktop
+  notification on arrival.
+- Autostart installs itself on first run (systemd user unit / launchd
+  agent; Windows with the installer work).
+- `e2e/` is a headless test driver (join/wait/send) — dev tool only.
 
-## v0.7+ — The long tail
+### Roadmap (all committed, in priority order)
 
-- [ ] **Pivot tables** — read existing first, then create/edit
-- [ ] **Print / export PDF** — page setup, print areas
-- [ ] **Images in sheets**
-- [ ] **Workbook protection**
-- [ ] **Goal seek**
-- [ ] **Scripting** — an embedded Rust scripting language (Rhai), not a
-      macro language clone. Explicit non-goal until the above ships.
+Launch blockers:
 
-## Engine parity track (continuous, upstream)
+1. **Signed installers** — macOS notarized dmg/pkg, Windows signed installer
+   (+ registry autostart), Linux package. Unsigned scare screens kill SMB
+   adoption. Includes the /download/{platform} routes serving real builds.
+2. ✅ Auto-update — the client polls the server every minute and
+   reconciles its state: enclaves the admin added appear, machines the
+   admin removed disconnect and clean themselves up, the tray always
+   tells the truth. (Getting new binaries onto machines is part of the
+   installers work, item 1.)
+3. **Offline send queue** — sending to a sleeping/offline colleague queues
+   on the sender and delivers when the target comes online. Beats AirDrop
+   at its own game.
+4. Deploy: fill the YOUR_* placeholders in server/config/deploy.yml and
+   litestream.yml, hostname at the Hetzner box, real OAuth creds, bake the
+   production control URL into enclaved's config default.
 
-IronCalc implements a large subset of the ~500 standard functions. As we hit gaps
-(XLOOKUP, dynamic arrays/spill, LAMBDA, …):
+Security hardening:
 
-1. Log the missing function in an issue here,
-2. Implement it **upstream in IronCalc** and pull the release — everyone wins
-   and we don't fork the engine.
+5. **New-machine approval** — admin approves each computer before it joins
+   the enclave (security fix + trust feature in the dashboard).
+6. **Machine session expiry/rotation** — sessions currently live forever;
+   add rotation and a revocation story beyond member removal.
+7. **Audit log** — who added/removed whom and when, visible to the owner.
+8. **Privacy policy + ToS** pages linked from the homepage.
 
-Same for xlsx fidelity bugs and for the missing merge-cells write API.
+Server operability:
 
-## App infrastructure track (continuous)
+9. **DERP bandwidth monitoring** — relayed transfers ride the Hetzner box;
+   meter it, alert on it, consider per-company caps.
+10. **Restore drill** — actually restore both SQLite files from Litestream
+    on a clean box and write down the steps (docs/restore.md).
+11. **Metrics + alerts** — basic server health, join/registration failures,
+    node counts.
 
-- [x] **Omarchy theming** — reads the active theme's `colors.toml` (accent,
-      foreground, background; `alacritty.toml` as fallback) from
-      `~/.local/state/omarchy/current/theme/` and derives every surface from
-      it, light themes included. A watcher polls the theme identity and
-      restyles the running app in place — and keeps a slow repaint scheduled
-      so even an idle window follows a switch. Neutral dark without Omarchy.
-- [x] Unit tests for A1 parsing, column names, jump-to-edge, replace; xlsx
-      round-trip integration test.
-- [ ] Per-frame cell format cache (the grid currently queries the engine per
-      visible cell per frame)
-- [ ] Packaging: `.desktop` file + icon, AUR PKGBUILD, release CI
-- [ ] Chorded/multi-key bindings in the keymap
+Product:
 
-## Explicit non-goals
+12. **OS integration** — right-click "Send with Enclave" (Finder/Explorer/
+    file managers) and drag-a-file-onto-the-tray. Habit-forming.
+13. **Delivery receipts** — sender sees "received 14:02" per drop.
 
-Macro-language compatibility, query/ETL tooling, real-time collaboration,
-cloud sync, an add-in ecosystem. These are incumbent-ecosystem moats, not
-spreadsheet
-features; chasing them kills the project. KISS.
+Being considered (not committed): —
