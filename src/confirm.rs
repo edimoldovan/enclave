@@ -2,25 +2,39 @@
 //!
 //! A tool that only looks at something runs straight away. A tool that *does*
 //! something — writes a cell, deletes rows, sends a file to a colleague — stops
-//! here first. The call is parked, the server's confirm window shows one
-//! sentence of what is about to happen, and the answer comes from a click in
-//! that window and nowhere else: there is no approve message on any socket, so
-//! nothing an assistant can say counts as consent.
+//! here first. The call is parked, a dialog shows one sentence of what is about
+//! to happen, and the answer comes from a click in that dialog and nowhere
+//! else: there is no approve message on any socket, so nothing an assistant can
+//! say counts as consent.
 //!
-//! No answer within [`TIMEOUT`] is a refusal. "Always allow this tool" is the
-//! one way the question stops being asked, and it is written down in
-//! `~/.config/enclave/allowlist.toml` where it can be read and deleted.
+//! The server has no window of its own, so the dialog is its own short-lived
+//! process — `enclave --confirm`, one per question, started by
+//! [`serve_dialogs`]. It gets the question on its stdin and answers on its
+//! stdout, and that pipe is the only channel an approval travels on. A child
+//! that crashes, hangs or says nothing is a refusal.
+//!
+//! No answer within [`TIMEOUT`] is a refusal — counted down in the dialog, and
+//! again here as a fuse, because the two are not the same process. "Always
+//! allow this tool" is the one way the question stops being asked, and it is
+//! written down in `~/.config/enclave/allowlist.toml` where it can be read and
+//! deleted.
 
 use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// How long a question waits before it counts as a refusal.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often the asking thread looks again with nothing to ask: short enough
+/// that a fuse burning out behind the current dialog is noticed.
+const POLL: Duration = Duration::from_millis(250);
 
 /// What the model is told when the answer is no. Same words either way: a
 /// refusal is a refusal whether it was clicked or waited out.
@@ -41,7 +55,7 @@ pub fn acting(tool: &str) -> bool {
     false
 }
 
-/// The one sentence the confirm window shows.
+/// The one sentence the confirm dialog shows.
 pub fn summary(tool: &str, args: &Value) -> String {
     if tool == "enclave_send_file" {
         let file = args
@@ -119,8 +133,9 @@ struct State {
 pub struct Broker {
     state: Mutex<State>,
     timeout: Duration,
-    /// A handle on the UI thread, so a question wakes the window that asks it.
-    wake: Mutex<Option<eframe::egui::Context>>,
+    /// Signalled when a question is queued, so the thread that asks them wakes
+    /// without polling for it.
+    asked: Condvar,
 }
 
 impl Broker {
@@ -139,14 +154,7 @@ impl Broker {
                 file,
             }),
             timeout,
-            wake: Mutex::new(None),
-        }
-    }
-
-    /// Gives the broker a way to repaint the window that shows its questions.
-    pub fn set_wake(&self, ctx: eframe::egui::Context) {
-        if let Ok(mut slot) = self.wake.lock() {
-            *slot = Some(ctx);
+            asked: Condvar::new(),
         }
     }
 
@@ -161,7 +169,7 @@ impl Broker {
     /// The gate every tool call passes through.
     ///
     /// Returns immediately for a tool that only reads, and for one the user has
-    /// already allowed for good. Otherwise it blocks until the window is
+    /// already allowed for good. Otherwise it blocks until the dialog is
     /// answered, or until the fuse burns out — which is a refusal.
     pub fn decide(&self, tool: &str, args: &Value) -> Result<(), String> {
         if !acting(tool) {
@@ -203,7 +211,7 @@ impl Broker {
     }
 
     /// The oldest unanswered question, with its countdown. `None` when there is
-    /// nothing to ask, which is when the confirm window stays away.
+    /// nothing to ask, which is when no dialog is on screen.
     pub fn front(&self) -> Option<Waiting> {
         let Ok(state) = self.state.lock() else {
             return None;
@@ -218,9 +226,26 @@ impl Broker {
         })
     }
 
-    /// How many questions are waiting. The window shows "and 2 more".
+    /// How many questions are waiting.
     pub fn waiting(&self) -> usize {
         self.state.lock().map(|s| s.queue.len()).unwrap_or(0)
+    }
+
+    /// Blocks until there is a question to ask, refusing on the way anything
+    /// whose fuse burned out while it queued behind another dialog.
+    pub fn next_question(&self) -> Waiting {
+        loop {
+            self.expire();
+            if let Some(question) = self.front() {
+                return question;
+            }
+            match self.state.lock() {
+                Ok(state) => {
+                    let _ = self.asked.wait_timeout(state, POLL);
+                }
+                Err(_) => std::thread::sleep(POLL),
+            }
+        }
     }
 
     /// Answers one question. `always` on an approval writes the tool into the
@@ -259,7 +284,8 @@ impl Broker {
     }
 
     /// Refuses anything whose countdown has run out. The waiting thread gives
-    /// up on its own too; this is what keeps the window honest about it.
+    /// up on its own too; this is the fuse, and it burns whether or not a
+    /// dialog ever came up.
     pub fn expire(&self) {
         let mut expired: Vec<Sender<Decision>> = Vec::new();
         if let Ok(mut state) = self.state.lock() {
@@ -285,12 +311,196 @@ impl Broker {
     }
 
     fn nudge(&self) {
-        if let Ok(slot) = self.wake.lock() {
-            if let Some(ctx) = slot.as_ref() {
-                ctx.request_repaint();
-            }
+        self.asked.notify_all();
+    }
+}
+
+/// One question as the dialog process receives it: everything it has to draw,
+/// and nothing else. It knows no ids and holds no handle on the broker, so the
+/// only thing it can do is answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub tool: String,
+    /// The one sentence: what is about to happen.
+    pub sentence: String,
+    /// The arguments, shortened; empty when there are none worth showing.
+    pub args: String,
+    /// What the "always allow" checkbox says.
+    pub always_label: String,
+    /// Seconds on the countdown before the dialog refuses by itself.
+    pub seconds: u64,
+}
+
+impl Request {
+    /// The question at the front of the queue, as the dialog will see it.
+    pub fn about(question: &Waiting) -> Request {
+        Request {
+            tool: question.tool.clone(),
+            sentence: question.summary.clone(),
+            args: question.digest.clone(),
+            always_label: format!("Always allow {}", question.tool),
+            seconds: question.left,
         }
     }
+
+    /// The single line this travels as, on the child's stdin.
+    pub fn encode(&self) -> String {
+        json!({
+            "tool": self.tool,
+            "sentence": self.sentence,
+            "args": self.args,
+            "always_label": self.always_label,
+            "seconds": self.seconds,
+        })
+        .to_string()
+    }
+
+    pub fn parse(line: &str) -> Option<Request> {
+        let value: Value = serde_json::from_str(line.trim()).ok()?;
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let tool = value.get("tool")?.as_str()?.to_string();
+        let always_label = match value.get("always_label").and_then(Value::as_str) {
+            Some(label) => label.to_string(),
+            None => format!("Always allow {tool}"),
+        };
+        Some(Request {
+            tool,
+            sentence: text("sentence"),
+            args: text("args"),
+            always_label,
+            seconds: value
+                .get("seconds")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(|| TIMEOUT.as_secs()),
+        })
+    }
+}
+
+/// What the dialog says back, on its stdout. Anything else — a crash, silence,
+/// a line that will not parse — is [`Answer::deny`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Answer {
+    pub decision: Decision,
+    pub always_allow: bool,
+}
+
+impl Answer {
+    pub fn deny() -> Answer {
+        Answer {
+            decision: Decision::Deny,
+            always_allow: false,
+        }
+    }
+
+    pub fn encode(&self) -> String {
+        json!({
+            "decision": match self.decision {
+                Decision::Approve => "approve",
+                Decision::Deny => "deny",
+            },
+            "always_allow": self.always_allow,
+        })
+        .to_string()
+    }
+
+    pub fn parse(line: &str) -> Option<Answer> {
+        let value: Value = serde_json::from_str(line.trim()).ok()?;
+        let decision = match value.get("decision")?.as_str()? {
+            "approve" => Decision::Approve,
+            "deny" => Decision::Deny,
+            _ => return None,
+        };
+        Some(Answer {
+            decision,
+            always_allow: value
+                .get("always_allow")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// Asks the queue's questions, one dialog at a time, for as long as the server
+/// runs. The next child starts when the last one has answered, so there is
+/// never a second dialog on screen competing for the same click.
+pub fn serve_dialogs(broker: &Broker) {
+    loop {
+        let question = broker.next_question();
+        let answer = ask(&Request::about(&question));
+        broker.resolve(question.id, answer.decision, answer.always_allow);
+    }
+}
+
+/// Runs one dialog process and waits for its one line.
+///
+/// The child is killed on the way out whatever it said, so a dialog never
+/// outlives the question it was asked, and nothing is left running.
+pub fn ask(request: &Request) -> Answer {
+    let mut child = match dialog_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("enclave: could not ask the user ({e}) — refusing");
+            return Answer::deny();
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{}", request.encode());
+        let _ = stdin.flush();
+        // Dropping it closes the pipe: the dialog has all it will ever get.
+    }
+
+    // Read on a thread, so a child that never answers is a timeout here rather
+    // than a server that waits for it forever.
+    let (answered, line) = channel();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut first = String::new();
+            let _ = BufReader::new(stdout).read_line(&mut first);
+            let _ = answered.send(first);
+        });
+    }
+    let answer = line
+        .recv_timeout(Duration::from_secs(request.seconds) + Duration::from_secs(1))
+        .ok()
+        .and_then(|line| Answer::parse(&line));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    answer.unwrap_or_else(Answer::deny)
+}
+
+/// How the dialog is started: this same executable, in its dialog role.
+///
+/// `ENCLAVE_CONFIRM_CMD` replaces it, which is how the tests stand a script in
+/// for a window.
+fn dialog_command() -> Command {
+    if let Some(spec) = std::env::var_os("ENCLAVE_CONFIRM_CMD") {
+        let words: Vec<String> = spec
+            .to_string_lossy()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if let Some((program, args)) = words.split_first() {
+            let mut command = Command::new(program);
+            command.args(args);
+            return command;
+        }
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("enclave"));
+    let mut command = Command::new(exe);
+    command.arg("--confirm");
+    command
 }
 
 /// Where the allowlist lives: `$XDG_CONFIG_HOME/enclave/allowlist.toml`, or

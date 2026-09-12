@@ -18,6 +18,12 @@ fn the_server_is_asked_for_by_flag() {
     assert_eq!(role(&["--serve"]), Role::Serve);
 }
 
+/// How the server puts a question on screen: this same binary, one dialog.
+#[test]
+fn the_dialog_is_asked_for_by_flag() {
+    assert_eq!(role(&["--confirm"]), Role::Confirm);
+}
+
 #[test]
 fn registering_stays_its_own_thing() {
     assert_eq!(role(&["register"]), Role::Register);

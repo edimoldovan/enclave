@@ -1,12 +1,13 @@
 //! The confirmation broker: what is asked about, and what each answer means.
 //!
-//! The window itself cannot be exercised without a screen, so what is checked
-//! here is everything behind it — the queue, the four ways a question ends, and
-//! the allowlist on disk.
+//! The dialog itself cannot be exercised without a screen, so what is checked
+//! here is everything behind it — the queue, the four ways a question ends, the
+//! allowlist on disk, and the one line each way between the server and the
+//! process that asks. `tests/headless.rs` drives that pipe end to end.
 
 use std::time::Duration;
 
-use enclave::confirm::{acting, summary, Broker, Decision, DENIED};
+use enclave::confirm::{acting, summary, Answer, Broker, Decision, Request, DENIED};
 use serde_json::json;
 
 /// A scratch allowlist path nothing else will touch. Everything the tests write
@@ -118,8 +119,9 @@ fn no_answer_is_a_refusal() {
     assert_eq!(broker.waiting(), 0, "the question should be gone");
 }
 
-/// The window calls `expire` every frame; that is what makes the countdown on
-/// screen mean something.
+/// The server-side fuse, burning without a dialog anywhere. The thread that
+/// asks the questions calls `expire` as it waits, which is what keeps a question
+/// queued behind a long-lived dialog from outliving its countdown.
 #[test]
 fn the_countdown_refuses_it() {
     let broker = std::sync::Arc::new(Broker::with_timeout(
@@ -224,6 +226,78 @@ fn every_advertised_tool_is_classified() {
     // Nothing outside the product's own names is in the set at all.
     assert!(!acting("workbook_info"));
     assert!(!acting("rm"));
+}
+
+/// What the dialog process is handed: everything it draws, and no way to reach
+/// back into the server.
+#[test]
+fn the_question_travels_as_one_line() {
+    let broker = std::sync::Arc::new(Broker::new(scratch("wire")));
+    let asking = broker.clone();
+    let call = std::thread::spawn(move || {
+        asking.decide("grido_cell_set", &json!({"cell": "A1", "value": 5}))
+    });
+    let w = question(&broker);
+
+    let request = Request::about(&w);
+    assert_eq!(request.tool, "grido_cell_set");
+    assert_eq!(request.sentence, w.summary);
+    assert!(request.args.contains("A1"), "got {:?}", request.args);
+    assert_eq!(request.always_label, "Always allow grido_cell_set");
+    assert!(request.seconds > 0);
+
+    let line = request.encode();
+    assert!(!line.contains('\n'), "one question is one line: {line}");
+    assert_eq!(Request::parse(&line), Some(request));
+    // Nothing that could be used to answer a different question.
+    let sent: serde_json::Value = serde_json::from_str(&line).expect("json");
+    assert!(sent.get("id").is_none(), "the dialog knows no ids: {line}");
+
+    broker.resolve(w.id, Decision::Deny, false);
+    let _ = call.join();
+}
+
+/// The answer, and every way of not giving one.
+#[test]
+fn only_a_clean_approval_is_an_approval() {
+    let approve = Answer {
+        decision: Decision::Approve,
+        always_allow: true,
+    };
+    let line = approve.encode();
+    assert!(!line.contains('\n'), "one answer is one line: {line}");
+    assert_eq!(Answer::parse(&line), Some(approve));
+    assert_eq!(
+        Answer::parse(&Answer::deny().encode()),
+        Some(Answer {
+            decision: Decision::Deny,
+            always_allow: false
+        })
+    );
+    // A trailing newline is how it arrives off a pipe.
+    assert_eq!(
+        Answer::parse("{\"decision\":\"approve\"}\n"),
+        Some(Answer {
+            decision: Decision::Approve,
+            always_allow: false
+        }),
+        "no checkbox means no checkbox, not a broken answer"
+    );
+    for nothing in [
+        "",
+        "\n",
+        "yes",
+        "{}",
+        "{\"decision\":\"maybe\"}",
+        "{\"decision\":true}",
+        "{\"always_allow\":true}",
+    ] {
+        assert_eq!(
+            Answer::parse(nothing),
+            None,
+            "{nothing:?} is not an answer, so it is a refusal"
+        );
+    }
 }
 
 #[test]

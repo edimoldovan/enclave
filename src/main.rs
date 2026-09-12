@@ -34,8 +34,15 @@ fn main() -> eframe::Result {
             Ok(())
         }
 
-        // The server: the socket, the registry, the confirmation window.
-        Role::Serve => enclave::serve::run(),
+        // The server: the socket, the registry, the confirmation broker. No
+        // window of its own, so it needs no display to run.
+        Role::Serve => {
+            enclave::serve::run();
+            Ok(())
+        }
+
+        // One confirmation dialog, for the question on stdin.
+        Role::Confirm => enclave::dialog::run(),
 
         Role::Window { product, path } => window(product, path),
     }

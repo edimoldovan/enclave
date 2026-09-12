@@ -3,17 +3,17 @@
 //! It owns the app socket — binding it *is* the single-instance lock — and
 //! three things that must not be duplicated: the MCP server an assistant talks
 //! to, the registry of which process is showing which product, and the
-//! confirmation broker with the window that asks. It shows no product itself,
-//! so nothing here knows what a spreadsheet is; a `grido_` call is forwarded to
-//! whichever process holds that role, and one is started if none does.
+//! confirmation broker. It shows no product itself, so nothing here knows what
+//! a spreadsheet is; a `grido_` call is forwarded to whichever process holds
+//! that role, and one is started if none does.
 //!
-//! Its own viewport is created hidden and asks to stay that way. That is
-//! deliberate: winit allows one event loop per process for its whole life, so
-//! the root viewport is what holds the loop open, and every other window of
-//! this process — the confirm dialog today, a tray or a preferences window
-//! later — is a viewport on that same loop rather than a second loop fighting
-//! it. Hiding it works on X11, Windows and macOS; Wayland has no way to unmap a
-//! toplevel, so there the root window stays on screen, empty.
+//! It is headless: no event loop, no viewport, no window, ever, and it runs on
+//! a machine with no display at all. The one thing it has to put on screen —
+//! the question before something acts — is a process of its own,
+//! `enclave --confirm`, one per question. That is why: a window is a whole
+//! winit event loop for the life of the process, and the server would be paying
+//! for it around the clock to show a dialog for a few seconds a day — on
+//! Wayland paying with an empty window it has no way to unmap.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -23,10 +23,9 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use eframe::egui;
 use serde_json::{json, Value};
 
-use crate::confirm::{Broker, Decision};
+use crate::confirm::Broker;
 use crate::ipc::{self, Msg};
 use crate::mcp::proto;
 
@@ -217,18 +216,20 @@ impl Server {
 ///
 /// If another server already answers, this one has nothing to do and says so
 /// by exiting quietly: whoever started it only wanted *a* server running.
-pub fn run() -> eframe::Result {
+pub fn run() {
     let path = proto::socket_path();
     let Some(listener) = proto::bind_socket(&path) else {
-        return Ok(());
+        return;
     };
     let server = Arc::new(Server::new(Broker::new(crate::confirm::allowlist_path())));
 
+    // The thread that asks the questions: it starts a dialog process for each
+    // one and waits for its answer, so nothing on this socket can approve.
     {
-        let server = server.clone();
+        let broker = server.broker.clone();
         std::thread::Builder::new()
-            .name("enclave-accept".into())
-            .spawn(move || accept_loop(&server, listener))
+            .name("enclave-confirm".into())
+            .spawn(move || crate::confirm::serve_dialogs(&broker))
             .ok();
     }
 
@@ -239,30 +240,8 @@ pub fn run() -> eframe::Result {
         let _ = grido::mcp::skill::install();
     });
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_visible(false)
-            .with_inner_size([460.0, 220.0])
-            .with_title("Enclave"),
-        ..Default::default()
-    };
-    // eframe shows the root window itself after the first frame — it starts
-    // every window hidden to avoid a white flash — so the builder's
-    // `with_visible(false)` is not the last word. `ServerApp` asks for hidden
-    // again on its first frame, which is applied after that.
-    let result = eframe::run_native(
-        "enclave",
-        options,
-        Box::new(move |cc| {
-            enclave_ui::fonts::install(&cc.egui_ctx);
-            cc.egui_ctx
-                .set_visuals(enclave_ui::theme::visuals(&enclave_ui::theme::load()));
-            server.broker.set_wake(cc.egui_ctx.clone());
-            Ok(Box::new(ServerApp::new(server)))
-        }),
-    );
+    accept_loop(&server, listener);
     let _ = std::fs::remove_file(&path);
-    result
 }
 
 fn accept_loop(server: &Arc<Server>, listener: UnixListener) {
@@ -375,112 +354,4 @@ fn read_host(
     }
     server.unregister(product, host);
     host.fail_all("the window closed");
-}
-
-/// The server's own eframe app: a root viewport kept out of sight, and the
-/// confirm window when there is something to confirm.
-struct ServerApp {
-    server: Arc<Server>,
-    /// Which question the window is showing, so the checkbox resets with it.
-    asking: Option<u64>,
-    always: bool,
-    /// What the root window was last told to be. `None` until the first frame,
-    /// which is what makes that frame ask for hidden.
-    root_visible: Option<bool>,
-}
-
-impl ServerApp {
-    fn new(server: Arc<Server>) -> ServerApp {
-        ServerApp {
-            server,
-            asking: None,
-            always: false,
-            root_visible: None,
-        }
-    }
-
-    /// The root window is only ever shown as a last resort: where the backend
-    /// cannot give us a second window, the question takes the root over rather
-    /// than going unseen.
-    fn keep_root_out_of_sight(&mut self, ctx: &egui::Context, asking: bool) {
-        let want = asking && ctx.embed_viewports();
-        if self.root_visible != Some(want) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(want));
-            self.root_visible = Some(want);
-        }
-    }
-}
-
-impl eframe::App for ServerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.server.broker.expire();
-        let Some(question) = self.server.broker.front() else {
-            self.asking = None;
-            self.always = false;
-            self.keep_root_out_of_sight(ctx, false);
-            return;
-        };
-        if self.asking != Some(question.id) {
-            self.asking = Some(question.id);
-            self.always = false;
-        }
-        self.keep_root_out_of_sight(ctx, true);
-
-        let waiting = self.server.broker.waiting();
-        let mut decision: Option<(Decision, bool)> = None;
-        ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("enclave-confirm"),
-            egui::ViewportBuilder::default()
-                .with_title("Enclave")
-                .with_inner_size([460.0, 220.0])
-                .with_resizable(false)
-                .with_always_on_top(),
-            |ctx, _class| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Allow this?").strong());
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(&question.summary).size(15.0));
-                    if !question.digest.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new(&question.digest).weak().size(11.0));
-                    }
-                    ui.add_space(10.0);
-                    ui.checkbox(&mut self.always, format!("Always allow {}", question.tool));
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Deny").clicked() {
-                            decision = Some((Decision::Deny, false));
-                        }
-                        if ui.button("Approve").clicked() {
-                            decision = Some((Decision::Approve, self.always));
-                        }
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("Denying in {} s", question.left)).weak(),
-                        );
-                        if waiting > 1 {
-                            ui.label(egui::RichText::new(format!("· {} more", waiting - 1)).weak());
-                        }
-                    });
-                });
-                // Closing the window, or Escape, is a refusal. There is no key
-                // that approves: a window that takes focus while someone is
-                // typing must not be able to collect a yes by accident.
-                if ctx.input(|i| i.viewport().close_requested())
-                    || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-                {
-                    decision = Some((Decision::Deny, false));
-                }
-            },
-        );
-
-        if let Some((decision, always)) = decision {
-            self.server.broker.resolve(question.id, decision, always);
-            self.asking = None;
-            self.always = false;
-        }
-        // Keep the countdown moving.
-        ctx.request_repaint_after(Duration::from_millis(250));
-    }
 }
