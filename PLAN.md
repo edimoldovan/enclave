@@ -10,7 +10,7 @@ company network. The products:
 | **Almanac** | calendar |
 | **Chat** | team chat + calls |
 | **Scribe** | documents |
-| **Ledger** | spreadsheets (repo `grido/`) |
+| **Grido** | spreadsheets |
 | **Bursar** | accounting |
 | **Depot** | everyone's own share, read-only for the others |
 | **Vault** | team passwords |
@@ -29,7 +29,7 @@ are yours, who your colleagues are.
 ## The products
 
 Named as places inside the enclave, always branded with the house mark
-(“Enclave Post”, “Enclave Ledger”, …):
+(“Enclave Post”, “Enclave Grido”, …):
 
 1. **enclaved** — the network client. Built. Identity, reachability,
    file drop, and the agent surface (enclave-mcp).
@@ -51,7 +51,7 @@ Named as places inside the enclave, always branded with the house mark
    open without conversion), with the MCP surface built in — so the agent can edit a
    document and attach it to an email, and the human gets a real
    editor when they want one.
-6. **Ledger** — the spreadsheet: fast native xlsx editor (Rust,
+6. **Grido** — the spreadsheet: fast native xlsx editor (Rust,
    IronCalc + egui; repo `grido/`, already in this folder); gets its
    MCP surface so the agent can read and edit workbooks too.
 7. **Bursar** — accounting for the small company, basic by design:
@@ -72,7 +72,7 @@ Named as places inside the enclave, always branded with the house mark
    full replication is right here, unlike Depot); membership in the
    enclave is what grants access.
 10. **Podium** — presentations: the third leg of the office trio next
-    to Scribe and Ledger, MCP surface included so the agent can build
+    to Scribe and Grido, MCP surface included so the agent can build
     and edit decks.
 11. **The agent layer** — not an app: the suite's skills + MCP
    registrations, installed once, that let the user's own agent span
@@ -101,7 +101,7 @@ Use-case coverage:
 - "Open a docx, edit, save, email to X" → Scribe + Post.
 - "Check X's feedback, open the attachment" → Post + Scribe + agent
   layer.
-- Spreadsheets in the same loop → Ledger.
+- Spreadsheets in the same loop → Grido.
 - Basic accounting, sending in reports → Bursar (+ Post to send).
 - Reach a colleague's shared files → Depot.
 - Team passwords → Vault.
@@ -109,14 +109,16 @@ Use-case coverage:
 
 Suite architecture (settled):
 
-- **One app to the user: one install, one daemon, one MCP.** The suite
-  ships as a single install artifact per platform containing two
-  binaries side by side (macOS: both inside `Contents/MacOS/`, signed
-  and notarized together — no extract-at-runtime tricks, which
-  Gatekeeper and corporate AV punish): the Rust app (tray + product
-  UIs) and the Go daemon. One `enclave-mcp`, registered once at
-  install, exposes every product's tools through the daemon's local
-  socket.
+- **One executable.** The Rust `enclave` binary (tray + every
+  product UI + the `enclave mcp` stdio entry) embeds the Go daemon
+  as bytes; on start it extracts it to the enclave state dir
+  (build-hash versioned, atomic write) and spawns it. One file
+  shipped and signed; two processes at runtime, so a UI crash never
+  drops the network. One MCP (`enclave mcp`), registered once as
+  `enclave`, exposes every product's tools — named
+  `<product>_<verb>` (`grido_cell_set`,
+  `post_draft`, `chat_send`, …); the spine's own verbs keep the
+  `enclave_` prefix. There are no other MCP servers, ever.
 - **Every UI / desktop app is Rust** (egui, as grido already proves
   out). The current Fyne tray moves to Rust with it.
 - **The tray is the launcher.** Every product's manual UI starts from
@@ -183,7 +185,7 @@ Suite architecture (settled):
 
 Process: one project, one codebase. Each product has a plan file
 here — PLAN-enclaved.md, PLAN-post.md, PLAN-almanac.md,
-PLAN-chat.md, PLAN-scribe.md, PLAN-ledger.md, PLAN-bursar.md,
+PLAN-chat.md, PLAN-scribe.md, PLAN-grido.md, PLAN-bursar.md,
 PLAN-depot.md, PLAN-vault.md, PLAN-podium.md, PLAN-mobile.md —
 implementation is then delegated to Opus 5 agents.
 

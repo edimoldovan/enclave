@@ -83,10 +83,10 @@ empty*.
 
 Read (run freely):
 
-- `enclave_mobile_devices` — the user's phones: @address, platform,
+- `mobile_devices` — the user's phones: @address, platform,
   enclaves, online, push/approval capability, last seen. One line
   each, never a dump.
-- `enclave_mobile_approvals` — pending and recent approval requests
+- `mobile_approvals` — pending and recent approval requests
   with outcomes, so an agent resuming later learns what was decided.
 
 Acting (each confirms — on the desktop daemon's native dialog when
@@ -163,14 +163,14 @@ offline", the desktop's own words.
   or the provider's link.
 - **Post** — inbox overview, read and reply; an attachment you cannot
   edit becomes "open on my laptop" — a drop to `@ed/laptop` that
-  opens in **Scribe** (or **Ledger** / **Podium** by type).
+  opens in **Scribe** (or **Grido** / **Podium** by type).
 - **Depot** — browse `@carolin`'s share read-only, fetch to the
   phone, or forward straight to your own computer.
 - **Vault** — replicated to the phone (tiny data), so the password
   you need away from the desk is there offline, behind Face ID.
 - **Bursar** — no mobile UI: the phone is where "the VAT draft is
   ready" lands, the PDF previews, Approve makes **Post** send it.
-- **Ledger / Scribe / Podium** — read-only previews, never editors.
+- **Grido / Scribe / Podium** — read-only previews, never editors.
   The verb on the phone is *hand off*.
 - **The agent layer** — the desktop agent reaches the human through
   the phone when the desk is empty; a second confirm surface, never a

@@ -66,31 +66,31 @@ free; acting tools pop the daemon's native confirm dialog.
 
 Read:
 
-- `enclave_calendar_overview` — compact agenda for a day or range,
+- `almanac_overview` — compact agenda for a day or range,
   one capped line per event (time, title, who, where, join link,
   RSVP). Today by default; the "today's summary" contribution.
-- `enclave_calendar_next` — the next meeting, its join link and
+- `almanac_next` — the next meeting, its join link and
   minutes-until. What "join my next call" reads first.
-- `enclave_calendar_event` — one event in full: description,
+- `almanac_event` — one event in full: description,
   attendees + responses, attachments, recurrence, conferencing.
-- `enclave_calendar_search` — by text, attendee or range.
-- `enclave_calendar_free` — free/busy for a set of `@people`,
+- `almanac_search` — by text, attendee or range.
+- `almanac_free` — free/busy for a set of `@people`,
   returning ranked slots: scheduling is one call, not ten.
-- `enclave_calendar_reminders` — fired and pending, so the agent can
+- `almanac_reminders` — fired and pending, so the agent can
   say "your call starts in 8 minutes".
 
 Acting (preview first, then the confirm dialog):
 
-- `enclave_calendar_draft` — build a new event, or changes to an
+- `almanac_draft` — build a new event, or changes to an
   existing one; returns the draft, a before/after diff and a
   `draft_id`. Touches nothing, so the agent iterates for free.
-- `enclave_calendar_commit` — apply a draft. The daemon renders that
+- `almanac_commit` — apply a draft. The daemon renders that
   diff as a preview card (times, attendees, the invite that goes out)
   and waits for a click.
-- `enclave_calendar_respond` — RSVP yes/no/maybe; it mails the
+- `almanac_respond` — RSVP yes/no/maybe; it mails the
   organizer, so it confirms.
-- `enclave_calendar_cancel` — cancel or delete. Always confirms.
-- `enclave_calendar_join` — open an event's call link on this
+- `almanac_cancel` — cancel or delete. Always confirms.
+- `almanac_join` — open an event's call link on this
   computer: a one-line confirm, and the one action worth an opt-in
   allowlist.
 
@@ -152,10 +152,10 @@ list**.
   "join my next call" opens the Chat call window, external links
   open the browser, and a meeting can announce itself in its channel.
 - **Post** — invitations arrive as mail and Post hands the .ics to
-  `enclave_calendar_draft`, so RSVP never leaves the agent chat;
+  `almanac_draft`, so RSVP never leaves the agent chat;
   agendas and minutes go back out through Post. "Today's summary" is
   Almanac's overview plus Post's inbox overview, one answer.
-- **Scribe / Ledger / Podium** — a prep doc bound to an event, linked
+- **Scribe / Grido / Podium** — a prep doc bound to an event, linked
   from its card; event attachments open natively — the deck you
   present, the model you review.
 - **Depot / Vault** — an attachment in a colleague's share opens

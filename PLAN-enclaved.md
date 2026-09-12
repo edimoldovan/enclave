@@ -6,9 +6,10 @@ what changes.
 
 ## Settled (from the suite plan)
 
-- **One install artifact, two binaries** side by side (macOS: both in
-  `Contents/MacOS/`, signed together — no extract-at-runtime): the
-  Rust app (tray + product UI hosting) and the Go daemon.
+- **One executable**: the Rust `enclave` binary embeds the Go daemon
+  as bytes, extracts it to the state dir (build-hash versioned,
+  atomic) and spawns it. Two processes at runtime — a UI crash never
+  drops the network.
 - **The daemon stays Go and thin**: tsnet, the local socket, and the
   headless product modules. Rust rewrite rejected (no mature Rust
   tailscale client) — the socket API isolates the suite from that
@@ -29,7 +30,13 @@ what changes.
 - **Confirm dialogs live in the daemon**: acting MCP tools (send
   file, send mail, …) pop a native dialog — a hijacked agent can
   never both decide and approve. Read tools run freely. Per-action
-  allowlists are opt-in.
+  allowlists are opt-in. Interim: the broker lives in the Rust
+  server process until the Go daemon absorbs it.
+- **One process per product UI**: the server process (socket, MCP,
+  confirm viewport, later the tray) is separate from product UI
+  processes — all the same executable. Product calls route over the
+  local socket to the product's process; one slow canvas never
+  stalls another window.
 - **The agent layer ships from here**: one `enclave-mcp` registered
   at install exposes every product's tools over the daemon socket;
   suite skills ("today's summary") live alongside it.
@@ -123,7 +130,7 @@ Acting:
   `@person/computer`; the dialog shows the file card and the target
   machine, an offline target queues instead of failing.
 - `enclave_open` — open a local file in the product owning its type
-  (docx → Scribe, xlsx → Ledger, pptx → Podium). One-line confirm, the
+  (docx → Scribe, xlsx → Grido, pptx → Podium). One-line confirm, the
   natural allowlist candidate.
 - `enclave_notify` — a desktop notification on *this* computer for a
   long job. Visible by definition, no confirm.
@@ -182,7 +189,7 @@ The socket, the roster, the notifier and the confirm for all of them.
 - **Chat** — chat logs replicate machine-to-machine on the same
   tailnet and drop-style protocol; mentions autocomplete from the
   daemon's roster; calls dial peers' enclave addresses.
-- **Scribe / Ledger / Podium** — "send it to @ale" is
+- **Scribe / Grido / Podium** — "send it to @ale" is
   `enclave_send_file`; a received .docx/.xlsx/.pptx opens in the right
   window by type; each reaches the suite through the same typed
   client, never a socket of its own.

@@ -1,0 +1,9 @@
+[package]
+name = "enclave-client"
+version = "0.1.0"
+edition = "2024"
+description = "Typed client for the enclaved daemon's local socket"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }

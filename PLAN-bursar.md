@@ -76,32 +76,32 @@ native confirm dialog, and none of those are allowlistable.
 
 Read / draft:
 
-- `enclave_books_overview` — the entry point: period figures, VAT owed,
+- `bursar_overview` — the entry point: period figures, VAT owed,
   unpaid invoices, waiting receipts, next deadline. One compact answer.
-- `enclave_books_inbox` — receipts that arrived (drop or Post
+- `bursar_inbox` — receipts that arrived (drop or Post
   attachment) and aren't booked, with vendor/amount/date guesses.
-- `enclave_books_search` — invoices, expenses, entries by counterparty,
+- `bursar_search` — invoices, expenses, entries by counterparty,
   amount, date or text; capped rows, each carrying an id.
-- `enclave_books_item` — one item in full: lines, VAT, attachments.
-- `enclave_books_accounts` — BAS accounts with period balances, so the
+- `bursar_item` — one item in full: lines, VAT, attachments.
+- `bursar_accounts` — BAS accounts with period balances, so the
   agent picks a real one instead of inventing it.
-- `enclave_invoice_draft` — compose or amend a draft; returns the draft
+- `bursar_invoice_draft` — compose or amend a draft; returns the draft
   *and* the path of the rendered PDF.
-- `enclave_books_report_draft` — VAT period or annual figures: the
+- `bursar_report_draft` — VAT period or annual figures: the
   filled boxes plus what feeds each one.
 
 Acting (confirm dialog, showing that same preview):
 
-- `enclave_books_post_entry` — post a balanced journal entry.
-- `enclave_expense_record` — book a receipt from the inbox; the dialog
+- `bursar_post_entry` — post a balanced journal entry.
+- `bursar_expense_record` — book a receipt from the inbox; the dialog
   shows it beside the proposed posting.
-- `enclave_invoice_issue` — next number in the series, PDF frozen.
-- `enclave_invoice_send` — hand the issued PDF to Post; one confirm
+- `bursar_invoice_issue` — next number in the series, PDF frozen.
+- `bursar_invoice_send` — hand the issued PDF to Post; one confirm
   covers issue+send when the ask was "send it".
-- `enclave_invoice_mark_paid` — record a payment.
-- `enclave_books_report_file` — export or submit the approved report in
+- `bursar_invoice_mark_paid` — record a payment.
+- `bursar_report_file` — export or submit the approved report in
   Skatteverket's format.
-- `enclave_books_export` — SIE 4 (or xlsx) for the accountant, to a
+- `bursar_export` — SIE 4 (or xlsx) for the accountant, to a
   path or to an `@person`.
 
 Rules baked into the tool descriptions: start at the overview; pass ids
@@ -157,8 +157,8 @@ red reserved for overdue and unbalanced.
   the reminder itself fires from enclaved.
 - **Depot**: the year's exports sit in the owner's share, so the
   accountant browses and fetches read-only — no second set of books.
-- **Ledger**: "the year in a spreadsheet" exports trial balance and
-  entries as .xlsx and opens them in Ledger.
+- **Grido**: "the year in a spreadsheet" exports trial balance and
+  entries as .xlsx and opens them in Grido.
 - **Scribe**: the annual report's prose (förvaltningsberättelse) is a
   .docx opened with the approved figures already filled in.
 - **Podium**: quarterly figures land in a deck on request.

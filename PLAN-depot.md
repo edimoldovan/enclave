@@ -80,35 +80,35 @@ is copying a private file into the folder the whole enclave reads.
 
 Read (run freely):
 
-- `enclave_share_overview` — the entry point: every member's share in a
+- `depot_overview` — the entry point: every member's share in a
   few lines (@address, online or last-seen, top folders, items, size,
   last change).
-- `enclave_share_list` — one directory: name, size, modified, kind;
+- `depot_list` — one directory: name, size, modified, kind;
   capped and paged, each row carrying a `ref`.
-- `enclave_share_find` — name, glob, extension or date, in one share or
+- `depot_find` — name, glob, extension or date, in one share or
   across the enclave; capped rows of @paths.
-- `enclave_share_stat` — one entry in full, plus whether you already
+- `depot_stat` — one entry in full, plus whether you already
   hold a copy and where.
-- `enclave_share_peek` — the head of a file without fetching it: text
+- `depot_peek` — the head of a file without fetching it: text
   lines, a csv's columns, a docx outline, a workbook's sheet names, a
   thumbnail. "What's in @carolin's Q3 folder", without 400 MB.
-- `enclave_share_mine` — what *you* publish and who fetched it. The
+- `depot_mine` — what *you* publish and who fetched it. The
   privacy mirror; the call to make before publishing.
-- `enclave_share_transfers` — in flight, queued and recent, with
+- `depot_transfers` — in flight, queued and recent, with
   progress and outcomes.
 
 Acting (the daemon's native dialog, preview inside):
 
-- `enclave_share_fetch` — copy a file or folder here; the dialog shows
+- `depot_fetch` — copy a file or folder here; the dialog shows
   source @path, size (count and total for a folder), destination and
   the peer's state. Opt-in allowlist per peer and size, since this is
   the one people repeat all day.
-- `enclave_share_open` — open an entry read-only in Scribe, Ledger,
+- `depot_open` — open an entry read-only in Scribe, Grido,
   Podium or the previewer — streamed, not copied. One-line confirm.
-- `enclave_share_publish` — put a local file or folder into *your*
+- `depot_publish` — put a local file or folder into *your*
   share. The dialog says plainly that the whole enclave will be able to
   read it, and shows what it is. Never allowlistable.
-- `enclave_share_unpublish` — move something out of your share. It
+- `depot_unpublish` — move something out of your share. It
   stops being visible; it is never deleted.
 
 Rules baked into the descriptions: one address everywhere —
@@ -134,7 +134,7 @@ One window: a calm two-pane browser on grido's furniture.
   Type-to-jump, sortable headers, generous rows, tabular figures.
   Double-click opens read-only; Fetch takes a copy.
 - **Right — preview and detail** (collapsible): images, PDFs and text
-  streamed on demand, documents summarised through Scribe, Ledger or
+  streamed on demand, documents summarised through Scribe, Grido or
   Podium; size, hash, "you fetched this on 12 Aug".
 - **Bottom — transfers** (collapsible): in flight with progress, queued
   for sleeping peers, recent with reveal-in-folder.
@@ -161,7 +161,7 @@ One window: a calm two-pane browser on grido's furniture.
 - **enclaved** — the tailnet, @-resolution, notifications and confirm
   dialogs are all its; the share protocol is the drop port's twin, same
   handshake, opposite direction.
-- **Scribe / Ledger / Podium** — a colleague's .docx, .xlsx or .pptx
+- **Scribe / Grido / Podium** — a colleague's .docx, .xlsx or .pptx
   opens read-only from their machine, and editing offers "save as your
   own copy": ownership shown, not explained. Their open dialogs each
   carry a Depot tab.

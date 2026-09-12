@@ -1,0 +1,16 @@
+[package]
+name = "grido"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE"
+authors = ["Eduard Moldovan"]
+description = "The Grido spreadsheet: engine, UI and its assistant tools"
+
+[dependencies]
+anyhow = "1.0.104"
+arboard = "3.6.1"
+eframe = "0.33.3"
+enclave-ui = { path = "../enclave-ui" }
+ironcalc = "0.8.3"
+rfd = "0.17.2"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }

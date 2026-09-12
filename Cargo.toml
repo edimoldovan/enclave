@@ -1,18 +1,19 @@
+[workspace]
+members = ["crates/enclave-ui", "crates/enclave-client", "crates/grido"]
+
 [package]
-name = "sheetz"
+name = "enclave"
 version = "0.1.0"
 edition = "2024"
 license-file = "LICENSE"
 authors = ["Eduard Moldovan"]
-repository = "https://github.com/edimoldovan/sheetz"
-description = "A fast native spreadsheet for Linux, with an assistant that can maintain your files"
+repository = "https://github.com/edimoldovan/enclave"
+description = "One app for a company's private network: its UIs and the assistant bridge they share"
 
 [dependencies]
-anyhow = "1.0.104"
-arboard = "3.6.1"
 eframe = "0.33.3"
-ironcalc = "0.8.3"
-rfd = "0.17.2"
-serde = { version = "1.0.229", features = ["derive"] }
+enclave-client = { path = "crates/enclave-client" }
+enclave-ui = { path = "crates/enclave-ui" }
+grido = { path = "crates/grido" }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 toml = "1.1.4"

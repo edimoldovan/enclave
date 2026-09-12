@@ -1,7 +1,7 @@
 # Plan: Enclave Podium
 
 Presentations: the third leg of the office trio next to Scribe and
-Ledger.
+Grido.
 
 ## Settled (from the suite plan)
 
@@ -68,40 +68,40 @@ confirm dialog, and one apply is one undo step.
 
 Read:
 
-- `enclave_deck_list` — known decks: path, title, slides, last opened.
-- `enclave_deck_outline` — the whole deck, compact: per slide its
+- `podium_list` — known decks: path, title, slides, last opened.
+- `podium_outline` — the whole deck, compact: per slide its
   layout, title, bullets, notes, media. **Call this first**; 60 slides
   fit in a few hundred lines.
-- `enclave_deck_slide` — one slide in full: each shape with a stable
+- `podium_slide` — one slide in full: each shape with a stable
   id, placeholder name, geometry, text runs, style.
-- `enclave_deck_theme` — masters, layouts, colour and font scheme, so
+- `podium_theme` — masters, layouts, colour and font scheme, so
   generated slides wear the company template.
-- `enclave_deck_render` — PNG of a slide or range: the agent sees what
+- `podium_render` — PNG of a slide or range: the agent sees what
   it made, other products embed it.
-- `enclave_deck_notes` — presenter notes across the deck.
+- `podium_notes` — presenter notes across the deck.
 
 Acting:
 
-- `enclave_deck_draft` — slides from an outline (or a Scribe doc,
-  Ledger range, Bursar figures). **Writes nothing**: returns a draft
+- `podium_draft` — slides from an outline (or a Scribe doc,
+  Grido range, Bursar figures). **Writes nothing**: returns a draft
   id, the outline it would produce, and thumbnails. Iterating is free.
-- `enclave_deck_apply` — commit a draft or an edit set. The confirm
+- `podium_apply` — commit a draft or an edit set. The confirm
   dialog *is* the preview: before/after thumbnails, added / changed /
   removed marked.
-- `enclave_deck_edit_text` — title, body or notes on one slide, or a
+- `podium_edit_text` — title, body or notes on one slide, or a
   named placeholder; confirms with a text diff.
-- `enclave_deck_slides` — add, duplicate, reorder, delete.
-- `enclave_deck_media` — an image or a Ledger chart into a named
+- `podium_slides` — add, duplicate, reorder, delete.
+- `podium_media` — an image or a Grido chart into a named
   placeholder, never at raw coordinates.
-- `enclave_deck_export` — PDF or PNGs beside the deck.
-- `enclave_deck_send` — the deck or its PDF to `@ale`, to Post as an
+- `podium_export` — PDF or PNGs beside the deck.
+- `podium_send` — the deck or its PDF to `@ale`, to Post as an
   attachment, or into a Depot share.
-- `enclave_deck_present` — start/stop, go to slide n. **No confirm**:
+- `podium_present` — start/stop, go to slide n. **No confirm**:
   visible by definition, Escape undoes it.
 
 Good to drive: overview before detail, hard caps, never raw XML at the
 model; slides by index *and* stable id, shapes by placeholder name
-(Ledger's `table_*` lesson — coordinates are where models err); draft
+(Grido's `table_*` lesson — coordinates are where models err); draft
 → preview → apply for anything multi-slide; errors as advice ("layout
 Two Content has no Chart placeholder; it has Title, Left, Right");
 edits refused while the human types in a shape or presents; a shipped
@@ -149,7 +149,7 @@ own sake. Every action is a registry command, so every action binds.
 - **Scribe** — "make a deck from this doc": Scribe hands over its
   outline; the shared `ooxml/` crate moves images and charts across
   without re-encoding.
-- **Ledger** — a chart or range becomes a slide; re-running
+- **Grido** — a chart or range becomes a slide; re-running
   `deck_media` refreshes it. A copy, never a live link.
 - **Post** — a .pptx attachment opens straight in Podium (the suite's
   benchmark sentence); "send the deck to @ale" leaves as attachment or

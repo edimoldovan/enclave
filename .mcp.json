@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "sheetz": {
+    "enclave": {
       "command": "sh",
-      "args": ["-c", "exec ./target/release/sheetz mcp"]
+      "args": ["-c", "exec ./target/release/enclave mcp"]
     }
   }
 }

@@ -12,7 +12,7 @@ plus a simple client for manual use. Never a hosted mail service.
   confirm dialog (prompt-injection rule).
 - **Simple manual UI** in Rust (egui), launched from the tray and the
   OS app search stub ("Enclave Post").
-- Attachments flow to/from Scribe, Ledger, Podium (docx/xlsx native)
+- Attachments flow to/from Scribe, Grido, Podium (docx/xlsx native)
   and file drops land via enclaved.
 
 ## Starter roadmap
@@ -49,7 +49,7 @@ while no window is open — that is why the bridge lives in the daemon.
 - **Drafts are the agent's workbench.** Composing, replying and
   attaching produce a *draft in the daemon*, never a send: the agent
   gets the rendered draft plus a `draft_id` and iterates for free, and
-  only `enclave_mail_send` — through the native confirm dialog — puts
+  only `post_send` — through the native confirm dialog — puts
   anything on the wire. A draft survives a crash and expires on its
   own.
 - **`post/` in the Rust app** — grido's split verbatim. `client.rs` is
@@ -81,37 +81,37 @@ free; acting tools go through the daemon's native confirm dialog.
 
 Read:
 
-- `enclave_mail_overview` — the entry point: unread and recent as one
+- `post_overview` — the entry point: unread and recent as one
   capped line per thread (who, subject, when, snippet, attachments,
   mailbox). Half of "today's summary".
-- `enclave_mail_thread` — one conversation: every message with a
+- `post_thread` — one conversation: every message with a
   stable ref, quotes collapsed, attachments listed.
-- `enclave_mail_message` — one message in full: body as plain text,
+- `post_message` — one message in full: body as plain text,
   the headers that matter, byte-capped.
-- `enclave_mail_search` — provider-side search (from, to, subject,
+- `post_search` — provider-side search (from, to, subject,
   has-attachment, date, text); capped rows, each carrying a ref.
-- `enclave_mail_attachments` — attachments across a thread or a
+- `post_attachments` — attachments across a thread or a
   search: name, type, size, ref. The input to "open the attachment".
-- `enclave_mail_contacts` — a name to real addresses, from the
+- `post_contacts` — a name to real addresses, from the
   mailbox's own history and the enclave roster, so `@ale` resolves
   instead of being guessed.
-- `enclave_mail_accounts` — connected mailboxes, sync age, outbox
+- `post_accounts` — connected mailboxes, sync age, outbox
   depth, which one is the default.
 
 Acting (draft first, then the confirm dialog):
 
-- `enclave_mail_draft` — new, reply, reply-all or forward; returns the
+- `post_draft` — new, reply, reply-all or forward; returns the
   rendered draft and a `draft_id`. Sends nothing, so iterating is free.
-- `enclave_mail_attach` — put a file on a draft: a path, a Scribe /
-  Ledger / Podium document, or a file fetched from a Depot share.
-- `enclave_mail_send` — send a draft. The dialog *is* the preview:
+- `post_attach` — put a file on a draft: a path, a Scribe /
+  Grido / Podium document, or a file fetched from a Depot share.
+- `post_send` — send a draft. The dialog *is* the preview:
   every recipient spelled out, subject, body, attachment names. Never
   allowlistable.
-- `enclave_mail_file` — archive, move, label, mark read/unread. One
+- `post_file` — archive, move, label, mark read/unread. One
   confirm covers a batch; the reversible ones are allowlistable.
-- `enclave_mail_delete` — to trash, never permanent. Always confirms.
-- `enclave_mail_save_attachment` — to a path, or straight into Scribe
-  / Ledger / Podium, returning the doc id the agent then edits.
+- `post_delete` — to trash, never permanent. Always confirms.
+- `post_save_attachment` — to a path, or straight into Scribe
+  / Grido / Podium, returning the doc id the agent then edits.
 
 Rules baked into the tool descriptions: start at the overview; pass
 refs back verbatim (`thr_…`, `msg_…`, `att_…`) — nothing is addressed
@@ -142,7 +142,7 @@ Never one forced three-pane layout.
   grid, one row per conversation, unread carried by weight rather
   than a badge; back goes to accounts. **Email detail**: sender line
   badged `@ale` when the sender is a colleague, quotes collapsed, an
-  attachment strip with Open in Scribe / Ledger / Podium.
+  attachment strip with Open in Scribe / Grido / Podium.
 - **HTML bodies are mandatory** — real mail is HTML and Post renders
   it, in the common webview component from `enclave-ui`: sandboxed,
   no scripts, remote images off by default behind one click that is
@@ -178,13 +178,13 @@ and Post is where the two meet.
   the same desktop notification path as file drops; a colleague in the
   To: field shows as `@ale` while his real address goes on the wire.
   Post has no notifier of its own.
-- **Scribe / Ledger / Podium** — the benchmark sentence:
-  `enclave_mail_save_attachment` opens the .docx / .xlsx / .pptx
+- **Scribe / Grido / Podium** — the benchmark sentence:
+  `post_save_attachment` opens the .docx / .xlsx / .pptx
   natively and returns a doc id; the edited file comes back as a Post
-  draft through `enclave_doc_send` / `_sheet_send` / `_deck_send`, and
+  draft through `scribe_send` / `_sheet_send` / `_deck_send`, and
   one confirm — Post's — sends it.
 - **Almanac** — invitations arrive as mail and Post hands the .ics to
-  `enclave_calendar_draft`, so RSVP never leaves the agent chat.
+  `almanac_draft`, so RSVP never leaves the agent chat.
   "Today's summary" is Post's overview plus Almanac's agenda, one
   answer.
 - **Bursar** — supplier invoices and receipts arrive as attachments

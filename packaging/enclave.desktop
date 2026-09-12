@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Enclave
+GenericName=Spreadsheet
+Comment=Fast native spreadsheet for .xlsx files
+Exec=enclave %f
+Icon=enclave
+Terminal=false
+Categories=Office;Spreadsheet;
+MimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;text/csv;
+Keywords=spreadsheet;xlsx;calc;
+StartupNotify=true
+StartupWMClass=enclave

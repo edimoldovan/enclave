@@ -3,18 +3,18 @@
 //! MCP's transport is newline-delimited JSON-RPC 2.0: one message per line.
 //! That is simple enough to speak directly, so there is no framework here.
 //!
-//! The GUI owns a socket; `sheetz mcp` is the process an MCP client actually
-//! launches, and it just copies lines between its stdin/stdout and that
-//! socket. The GUI therefore never gives up its own stdio, and the workbook
-//! the model edits is the one on screen.
+//! The server owns a socket; `enclave mcp` is the process an MCP client
+//! actually launches. It answers the handshake and the enclave's read-only
+//! tools itself, and copies anything that acts — a call into a product, a file
+//! going to a colleague — between its stdin/stdout and that socket. The server
+//! therefore never gives up its own stdio, it is the one place a confirmation
+//! can be asked for, and the workbook the model edits is the one on screen.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-
-use crate::mcp::tools;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -25,11 +25,11 @@ pub fn socket_path() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(dir);
         if p.is_dir() {
-            return p.join("sheetz.sock");
+            return p.join("enclave.sock");
         }
     }
     let uid = unsafe { libc_getuid() };
-    PathBuf::from(format!("/tmp/sheetz-{uid}.sock"))
+    PathBuf::from(format!("/tmp/enclave-{uid}.sock"))
 }
 
 // One libc call, not worth a dependency.
@@ -45,61 +45,42 @@ pub fn is_listening() -> bool {
     UnixStream::connect(socket_path()).is_ok()
 }
 
-/// Starts the socket server on a background thread.
+/// Takes the socket, which is what makes a process *the* server.
 ///
-/// Called unconditionally at app startup — launching from a desktop launcher
-/// must be exactly as good as launching from a terminal. If another instance
-/// already holds the socket, this one simply does not serve; a socket file
-/// left behind by a crash is detected (nothing answers) and replaced.
-pub fn spawn_server() -> Option<PathBuf> {
-    let path = socket_path();
-    if UnixStream::connect(&path).is_ok() {
-        // A live instance owns it; this window is a secondary.
+/// Binding is the single-instance lock: whoever gets it serves, and anyone who
+/// does not has nothing to do. A socket file left behind by a crash answers
+/// nothing, so it is replaced rather than respected.
+pub fn bind_socket(path: &Path) -> Option<UnixListener> {
+    if UnixStream::connect(path).is_ok() {
+        // A live server owns it.
         return None;
     }
-    // Nothing answered: any file here is stale.
-    let _ = std::fs::remove_file(&path);
-    let listener = match UnixListener::bind(&path) {
-        Ok(l) => l,
+    let _ = std::fs::remove_file(path);
+    match UnixListener::bind(path) {
+        Ok(listener) => Some(listener),
         Err(e) => {
-            eprintln!("sheetz: could not bind {}: {e}", path.display());
-            return None;
-        }
-    };
-    std::thread::Builder::new()
-        .name("sheetz-mcp".into())
-        .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                std::thread::spawn(move || {
-                    if let Err(e) = serve_connection(stream) {
-                        eprintln!("sheetz: mcp connection ended: {e}");
-                    }
-                });
-            }
-        })
-        .ok()?;
-    Some(path)
-}
-
-/// Answers JSON-RPC on one accepted connection until the peer hangs up.
-fn serve_connection(stream: UnixStream) -> std::io::Result<()> {
-    let mut out = stream.try_clone()?;
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(response) = handle_message(&line) {
-            writeln!(out, "{response}")?;
-            out.flush()?;
+            eprintln!("enclave: could not bind {}: {e}", path.display());
+            None
         }
     }
-    Ok(())
 }
 
-/// Handles one JSON-RPC message. Returns None for notifications.
+/// Handles one JSON-RPC message, running tools right here. Returns None for
+/// notifications.
 pub fn handle_message(line: &str) -> Option<Value> {
+    handle_message_with(line, &dispatch)
+}
+
+/// The same, with the tool runner passed in.
+///
+/// The server hands in its own: one that asks the user first and forwards to
+/// whichever window holds the product. The protocol above it — handshake,
+/// tool list, what an error looks like — is identical either way, which is why
+/// a client cannot tell the shim from the server.
+pub fn handle_message_with(
+    line: &str,
+    run: &(dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync),
+) -> Option<Value> {
     let msg: Value = serde_json::from_str(line).ok()?;
     // No id means a notification: act on nothing, answer nothing.
     let id = msg.get("id").filter(|v| !v.is_null())?.clone();
@@ -110,18 +91,18 @@ pub fn handle_message(line: &str) -> Option<Value> {
         "initialize" => Ok(json!({
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "sheetz", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "enclave", "version": env!("CARGO_PKG_VERSION") },
             // Clients surface this to the model before any tool is called.
-            "instructions": crate::mcp::skill::instructions(),
+            "instructions": instructions(),
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::definitions() })),
+        "tools/list" => Ok(json!({ "tools": definitions() })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             // Per MCP, a tool that fails is a *result* with isError set — the
             // model is meant to read the message and try something else.
-            match crate::mcp::bridge::call(name, args) {
+            match run(name, args) {
                 Ok(value) => Ok(json!({
                     "content": [{ "type": "text", "text": render(&value) }],
                     "isError": false,
@@ -144,6 +125,42 @@ pub fn handle_message(line: &str) -> Option<Value> {
     })
 }
 
+/// Every tool this server advertises: the enclave's own first, then the app's.
+pub fn definitions() -> Vec<Value> {
+    let mut tools = crate::mcp::tools::definitions();
+    tools.extend(grido::mcp::tools::definitions());
+    tools
+}
+
+/// Runs a tool by its prefix: `enclave_` here, `grido_` on the UI thread of
+/// this same process.
+///
+/// A name with neither prefix is refused rather than guessed at, so a typo
+/// never reaches an app — and never opens a window.
+fn dispatch(name: &str, args: Value) -> Result<Value, String> {
+    if name.starts_with(crate::mcp::tools::PREFIX) {
+        return crate::mcp::tools::call(name, &args);
+    }
+    if name.starts_with(grido::mcp::tools::PREFIX) {
+        return crate::mcp::bridge::call(name, args);
+    }
+    Err(format!("no such tool: {name}"))
+}
+
+/// What the model is told before it calls anything. One server carries the
+/// network and the apps on it, so say which is which.
+fn instructions() -> String {
+    format!(
+        "Enclave is the user's private network and the apps that run on it. \
+         Every tool is named product_verb. The enclave_ tools answer from this \
+         computer's daemon and open nothing: enclave_status for the enclaves \
+         it is on, enclave_computers for who is reachable, enclave_send_file \
+         to drop a file straight onto one of their computers. The grido_ tools \
+         drive Grido, the spreadsheet; calling one brings its window up.\n\n{}",
+        grido::mcp::skill::instructions()
+    )
+}
+
 /// Tool results go back as text: a bare string stays as-is, anything else is
 /// pretty JSON so the model can read structure without a parser.
 fn render(value: &Value) -> String {
@@ -153,14 +170,16 @@ fn render(value: &Value) -> String {
     }
 }
 
-/// `sheetz mcp`: answer the handshake here, and only reach for the app when a
-/// tool is actually called.
+/// `enclave mcp`: answer here whatever can be answered here, and reach for the
+/// server for everything that acts.
 ///
 /// Connecting an MCP client must never open a window: clients launch this
 /// process at session start and list tools whether or not anything is used.
-/// The handshake is the same binary's own answers, so it matches the app's.
-/// The first `tools/call` connects, starting the GUI if nothing is listening,
-/// and from then on every line is proxied verbatim in both directions.
+/// The handshake is the same binary's own answers, so it matches the server's,
+/// and reading the enclave — which enclaves, which computers — is served
+/// straight from the daemon with nothing on screen. The first call that *does*
+/// something connects to the server, starting it if nothing is listening,
+/// because that is the process that can ask the user first.
 pub fn stdio_shim() -> std::io::Result<()> {
     let stdin = std::io::stdin().lock();
     let mut to_app: Option<UnixStream> = None;
@@ -171,23 +190,21 @@ pub fn stdio_shim() -> std::io::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(app) = to_app.as_mut() {
+        if needs_server(&line) {
+            if to_app.is_none() {
+                let mut app = crate::ipc::ensure_server()?;
+                let from_app = handshake(&mut app)?;
+                // Socket → stdout on its own thread; stdin → socket stays here.
+                pump = Some(std::thread::spawn(move || pump_to_stdout(from_app)));
+                to_app = Some(app);
+            }
+            let app = to_app.as_mut().expect("connected");
             writeln!(app, "{line}")?;
             app.flush()?;
             continue;
         }
-        if method_of(&line) == "tools/call" {
-            let mut app = connect_to_app()?;
-            let from_app = handshake(&mut app)?;
-            // Socket → stdout on its own thread; stdin → socket stays here.
-            pump = Some(std::thread::spawn(move || pump_to_stdout(from_app)));
-            writeln!(app, "{line}")?;
-            app.flush()?;
-            to_app = Some(app);
-            continue;
-        }
-        // initialize, ping, tools/list — answered locally. tools/call never
-        // gets here, so the app-side branch of this handler is unreachable.
+        // initialize, ping, tools/list and the read-only enclave_ calls: all
+        // answered here, windowless.
         if let Some(response) = handle_message(&line) {
             let mut stdout = std::io::stdout();
             writeln!(stdout, "{response}")?;
@@ -206,23 +223,22 @@ pub fn stdio_shim() -> std::io::Result<()> {
     Ok(())
 }
 
-fn method_of(line: &str) -> String {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|m| m.get("method").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_default()
-}
-
-/// Connects, starting the GUI if nothing is listening yet.
-fn connect_to_app() -> std::io::Result<UnixStream> {
-    let path = socket_path();
-    match UnixStream::connect(&path) {
-        Ok(s) => Ok(s),
-        Err(_) => {
-            launch_gui();
-            wait_for_socket(&path)
-        }
+/// True when this line has to go to the server: a call into a product's
+/// window, or anything that acts on the user's behalf. Both need the server —
+/// one for the window, both for the confirmation. Everything else the shim
+/// answers itself.
+pub fn needs_server(line: &str) -> bool {
+    let Ok(msg) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return false;
     }
+    msg.pointer("/params/name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| {
+            name.starts_with(grido::mcp::tools::PREFIX) || crate::confirm::acting(name)
+        })
 }
 
 /// Replays `initialize` to the app under an id no client uses, and swallows
@@ -235,7 +251,7 @@ fn handshake(app: &mut UnixStream) -> std::io::Result<BufReader<UnixStream>> {
         "params": {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": { "name": "sheetz-shim", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "enclave-shim", "version": env!("CARGO_PKG_VERSION") },
         }
     });
     writeln!(app, "{request}")?;
@@ -246,7 +262,7 @@ fn handshake(app: &mut UnixStream) -> std::io::Result<BufReader<UnixStream>> {
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
-            return Err(std::io::Error::other("the Sheetz window closed"));
+            return Err(std::io::Error::other("the enclave server closed"));
         }
         let id = serde_json::from_str::<Value>(&line)
             .ok()
@@ -271,30 +287,8 @@ fn pump_to_stdout(mut from_app: BufReader<UnixStream>) {
             }
         }
     }
-    // The app went away; a client waiting on stdin should not hang.
+    // The server went away; a client waiting on stdin should not hang.
     std::process::exit(0);
-}
-
-fn launch_gui() {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sheetz"));
-    let _ = std::process::Command::new(exe)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-/// Waits for the freshly started GUI to bind its socket.
-fn wait_for_socket(path: &PathBuf) -> std::io::Result<UnixStream> {
-    for _ in 0..100 {
-        if let Ok(s) = UnixStream::connect(path) {
-            return Ok(s);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    Err(std::io::Error::other(
-        "timed out waiting for the Sheetz window to start",
-    ))
 }
 
 /// Reads exactly one line; used by tests and the shim's handshake.

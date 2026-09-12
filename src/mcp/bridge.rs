@@ -2,7 +2,7 @@
 //!
 //! A tool call arrives on a socket thread but must touch the `Engine`, which
 //! lives on the UI thread inside the eframe app. Requests are sent over a
-//! channel with a one-shot reply channel attached; `SheetzApp::update` drains
+//! channel with a one-shot reply channel attached; `GridoApp::update` drains
 //! them each frame. `Context::request_repaint` wakes the loop, so calls land
 //! promptly even when the window is idle.
 
@@ -11,12 +11,9 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 
-/// One tool call plus the channel its result goes back on.
-pub struct Call {
-    pub tool: String,
-    pub args: Value,
-    pub reply: Sender<Result<Value, String>>,
-}
+/// One tool call plus the channel its result goes back on. The UI that drains
+/// them owns the type; this is only the wire between the two threads.
+pub use grido::mcp::Call;
 
 /// Sender half, shared with socket threads.
 static TX: OnceLock<Mutex<Sender<Call>>> = OnceLock::new();
@@ -40,6 +37,24 @@ pub fn set_wake(ctx: eframe::egui::Context) {
         }
         None => {
             let _ = WAKE.set(Mutex::new(Some(ctx)));
+        }
+    }
+}
+
+/// Brings this process's window to the front.
+///
+/// Used when a second launch hands its file over: the person typed a command
+/// and expects a window, so the one that already exists comes forward.
+pub fn front() {
+    if let Some(slot) = WAKE.get() {
+        if let Ok(guard) = slot.lock() {
+            if let Some(ctx) = guard.as_ref() {
+                use eframe::egui::ViewportCommand;
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                ctx.request_repaint();
+            }
         }
     }
 }

@@ -1,76 +1,84 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-use sheetz::mcp;
-use sheetz::state::SheetzApp;
+use enclave::role::{self, Role};
+use enclave::{host, mcp};
+use grido::state::GridoApp;
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // `sheetz mcp` is the stdio shim an MCP client launches. It is a
-    // convenience, never a requirement: the server itself comes up with the
-    // GUI, however the GUI was started.
-    if args.first().map(String::as_str) == Some("mcp") {
-        if let Err(e) = mcp::proto::stdio_shim() {
-            eprintln!("sheetz mcp: {e}");
-            std::process::exit(1);
+    match role::of(&args) {
+        // The stdio shim an MCP client launches. It answers the handshake and
+        // the read-only tools itself and opens nothing; anything that acts goes
+        // to the server, which is the only place the user can be asked first.
+        Role::Shim => {
+            if let Err(e) = mcp::proto::stdio_shim() {
+                eprintln!("enclave mcp: {e}");
+                std::process::exit(1);
+            }
+            Ok(())
         }
-        return Ok(());
-    }
 
-    // `sheetz register` wires this install into the MCP clients it finds.
-    if args.first().map(String::as_str) == Some("register") {
-        let (done, skipped) = mcp::register::register_all();
-        if done.is_empty() {
-            println!("Registered with nothing.");
-        } else {
-            println!("Registered with: {}", done.join(", "));
+        // Wires this install into the MCP clients it finds.
+        Role::Register => {
+            let (done, skipped) = grido::mcp::register::register_all();
+            if done.is_empty() {
+                println!("Registered with nothing.");
+            } else {
+                println!("Registered with: {}", done.join(", "));
+            }
+            for note in skipped {
+                println!("Skipped {note}");
+            }
+            Ok(())
         }
-        for note in skipped {
-            println!("Skipped {note}");
-        }
-        return Ok(());
-    }
 
-    let path = args
-        .into_iter()
-        .find(|a| !a.starts_with('-'))
-        .map(PathBuf::from);
+        // The server: the socket, the registry, the confirmation window.
+        Role::Serve => enclave::serve::run(),
+
+        Role::Window { product, path } => window(product, path),
+    }
+}
+
+/// Shows a product — or finds that another window already is, and hands its
+/// file over instead of opening a second one.
+fn window(product: String, path: Option<PathBuf>) -> eframe::Result {
+    if product != role::DEFAULT_PRODUCT {
+        eprintln!("enclave: there is no product called \"{product}\"");
+        std::process::exit(2);
+    }
+    let link = match host::start(&product, path.as_deref()) {
+        host::Outcome::HandedOff => return Ok(()),
+        host::Outcome::Run(link) => link,
+    };
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_title("Sheetz"),
+            .with_title("Grido"),
         ..Default::default()
     };
     eframe::run_native(
-        "sheetz",
+        "enclave",
         options,
         Box::new(move |cc| {
-            sheetz::fonts::install(&cc.egui_ctx);
+            enclave_ui::fonts::install(&cc.egui_ctx);
             // Wear the Omarchy theme from the first frame.
             cc.egui_ctx
-                .set_visuals(sheetz::theme::visuals(&sheetz::theme::load()));
-            let mut app = SheetzApp::new(path);
+                .set_visuals(enclave_ui::theme::visuals(&enclave_ui::theme::load()));
+            let mut app = GridoApp::new(path);
 
-            // Start the assistant bridge unconditionally: launching from a
-            // desktop launcher must be exactly as capable as a terminal start.
+            // The bridge carries a tool call from the socket thread onto this
+            // one, where the workbook lives. It must exist before the server is
+            // told we are here, so start it first.
             let rx = mcp::bridge::install();
             mcp::bridge::set_wake(cc.egui_ctx.clone());
             app.mcp_rx = Some(rx);
-            app.mcp_serving = mcp::proto::spawn_server().is_some();
-
-            // Tell assistants how to reach us. Doing this here is what makes
-            // "the app is running" the only requirement — no install step and
-            // no hand-edited JSON. It is a no-op once the entry is correct,
-            // and only the instance owning the socket does it.
-            if app.mcp_serving {
-                std::thread::spawn(|| {
-                    mcp::register::register_on_startup();
-                    // Teach the assistant how to work with a spreadsheet, not
-                    // just which calls exist.
-                    let _ = mcp::skill::install();
-                });
+            app.mcp_socket = Some(mcp::proto::socket_path());
+            app.mcp_serving = link.is_some();
+            if let Some(link) = link {
+                host::serve(product, link);
             }
 
             Ok(Box::new(app))

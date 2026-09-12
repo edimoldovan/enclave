@@ -89,40 +89,40 @@ door a message leaves by.
 
 Read:
 
-- `enclave_chat_overview` — unread across channels and DMs, one capped
+- `chat_overview` — unread across channels and DMs, one capped
   line each, mentions first. The first call, and Chat' share of
-  "today's summary". `enclave_chat_channels` lists them all: purpose,
+  "today's summary". `chat_channels` lists them all: purpose,
   members, last activity, unread, muted.
-- `enclave_chat_read` — a window of one channel or DM: messages with
+- `chat_read` — a window of one channel or DM: messages with
   stable refs, `@author`, time, attachment refs; capped, defaulting to
   what is unread. There is no thread to read — a conversation is flat.
-- `enclave_chat_search` — text, author, channel or range → refs and
-  snippets. `enclave_chat_mentions` — where the user was named,
+- `chat_search` — text, author, channel or range → refs and
+  snippets. `chat_mentions` — where the user was named,
   answered and not: "did anyone need me?" in one call.
-- `enclave_chat_calls` — calls happening now, who is in them, whether
+- `chat_calls` — calls happening now, who is in them, whether
   this computer is being rung.
 
 Acting (draft first, then the dialog):
 
-- `enclave_chat_draft` — compose for a channel or DM: resolves
+- `chat_draft` — compose for a channel or DM: resolves
   `@mentions`, attaches files, returns the rendered message and a
   `draft_id`. Posts nothing, so iterating is free.
-- `enclave_chat_post` — post a draft. The dialog *is* the preview:
+- `chat_post` — post a draft. The dialog *is* the preview:
   the message as it will look, the channel, who gets woken ("@here —
   notifies 7 people").
-- `enclave_chat_share_file` — a file into a channel: a drop, or a
+- `chat_share_file` — a file into a channel: a drop, or a
   reference into the sender's Depot share when it is large; the dialog
   names file, size and destination.
-- `enclave_chat_react` — an emoji on a message. Cheap and reversible:
+- `chat_react` — an emoji on a message. Cheap and reversible:
   a one-line confirm, and the obvious first allowlist entry.
-- `enclave_chat_edit` / `enclave_chat_retract` — one's own message
+- `chat_edit` / `chat_retract` — one's own message
   only; confirms with a before/after diff, and says plainly that peers
   drop the old text when the tombstone reaches them.
-- `enclave_chat_channel_new` — a channel with a purpose and members;
+- `chat_channel_new` — a channel with a purpose and members;
   the dialog names everyone added.
-- `enclave_chat_call` — start or join a call with `@people`. Ringing
+- `chat_call` — start or join a call with `@people`. Ringing
   someone's computer confirms; joining one you were invited to is the
-  one-liner. `enclave_chat_mute` changes only your own state, so it
+  one-liner. `chat_mute` changes only your own state, so it
   needs no dialog at all.
 
 Rules baked into the descriptions: every message has a short stable
@@ -194,10 +194,10 @@ threads to keep track of, and paste anything anywhere.
   announce itself in its channel ("@here standup in 5").
 - **Post** — an outside mail conversation continues inside: a mail
   forwards into a channel as a reference card, the mail staying in
-  Post; "answer him in mail" hands the text to `enclave_mail_draft`,
+  Post; "answer him in mail" hands the text to `post_draft`,
   whose own confirm sends it. Chat never becomes a mail client.
-- **Scribe / Ledger / Podium** — a document shared in a channel rides
-  a drop and opens natively; a Ledger range pastes as a small table;
+- **Scribe / Grido / Podium** — a document shared in a channel rides
+  a drop and opens natively; a Grido range pastes as a small table;
   Podium presents into a call, its audience viewport being the
   screen-share source.
 - **Depot** — a large file posts as a reference into the sender's

@@ -92,45 +92,45 @@ the agent finish the job without ever holding the secret.
 
 Read (free; none of them returns a secret):
 
-- `enclave_vault_overview` — the entry point: vaults, entry counts,
+- `vault_overview` — the entry point: vaults, entry counts,
   lock state, and what needs attention (flagged by a removal, reused,
   ancient). A handful of lines.
-- `enclave_vault_search` — by name, url, username or tag; capped
+- `vault_search` — by name, url, username or tag; capped
   rows, each carrying a stable id.
-- `enclave_vault_entry` — one entry's shape: fields present, which
+- `vault_entry` — one entry's shape: fields present, which
   are secret, username, url, tags, who changed it when. Values are
   described (`password: 24 chars, set 2026-04-11`), never printed.
-- `enclave_vault_access` — who can decrypt this vault, on which
+- `vault_access` — who can decrypt this vault, on which
   machines. Access is legible *before* a secret goes in.
 
 Acting (daemon confirm dialog; none allowlistable except where
 noted):
 
-- `enclave_vault_use` — **the tool the agent should reach for**: put
+- `vault_use` — **the tool the agent should reach for**: put
   the secret where the work is — the focused field, the clipboard
   (auto-clearing), or an env var for one named command — without it
   entering the model's context. The dialog names entry, destination
   and requester.
-- `enclave_vault_reveal` — hand the value to the agent, when nothing
+- `vault_reveal` — hand the value to the agent, when nothing
   else will do. The dialog's primary button is *Copy instead*; the
   secondary gives it up. Audited and rate-limited.
-- `enclave_vault_code` — the current TOTP code. Thirty seconds of
+- `vault_code` — the current TOTP code. Thirty seconds of
   exposure, so this is the one worth an opt-in allowlist.
-- `enclave_vault_generate` — a password or passphrase to a policy,
+- `vault_generate` — a password or passphrase to a policy,
   returned as a **handle, not a string**: the agent can create a
   strong credential it has never read.
-- `enclave_vault_draft` — compose an entry or changes to one; returns
+- `vault_draft` — compose an entry or changes to one; returns
   a diff with secret fields as *set / unchanged / generated*. Writes
   nothing, so iterating is free.
-- `enclave_vault_apply` — commit a draft; the dialog shows that diff.
-- `enclave_vault_grant` — put an entry in another vault, or give a
+- `vault_apply` — commit a draft; the dialog shows that diff.
+- `vault_grant` — put an entry in another vault, or give a
   vault to `@person`; the dialog spells out who gains access.
-- `enclave_vault_rotate` — record a changed credential and clear the
+- `vault_rotate` — record a changed credential and clear the
   needs-changing flag; or re-key a vault.
-- `enclave_vault_delete` — tombstone with history; always confirms.
+- `vault_delete` — tombstone with history; always confirms.
 
 Rules baked into the descriptions: never write a secret into a file,
-a message, an email or your own reply — use `enclave_vault_use`; pass
+a message, an email or your own reply — use `vault_use`; pass
 ids back verbatim; a locked vault is a state, not an error ("ask the
 human to unlock Vault"); refusals say what to do instead. A shipped
 skill teaches the habit, condensed into `initialize` instructions for
@@ -194,8 +194,8 @@ the platform allows.
   being pasted into chat, which is the actual disease.
 - **Almanac** — a meeting needing a shared credential links the entry
   by name; joining does not reveal it.
-- **Scribe / Ledger / Podium** — a protected .docx or .xlsx takes its
-  passphrase through `enclave_vault_use`, never through the agent's
+- **Scribe / Grido / Podium** — a protected .docx or .xlsx takes its
+  passphrase through `vault_use`, never through the agent's
   context.
 - **Bursar** — bank, Skatteverket ombud and provider logins live
   here; Bursar asks by entry id at the moment it needs one and keeps
@@ -223,7 +223,7 @@ replication plus the paid offsite backup is the answer. No custom
 crypto. No breach-database lookups in v1 (they leave the enclave), no
 strength theatre beyond reused, weak and old. No browser extension in
 v1 — the one omission we may regret, and the reason
-`enclave_vault_use` can type into the focused field. No web vault, no
+`vault_use` can type into the focused field. No web vault, no
 cloud copy, no hosted anything. KISS.
 
 ## Open

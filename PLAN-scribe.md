@@ -80,30 +80,30 @@ grido's discipline, adapted to flowing text:
 
 Read tools run freely. Acting tools never write: they produce a
 **change-set** the agent can see and iterate on, and only
-`enclave_doc_apply` — through the daemon's native confirm dialog —
+`scribe_apply` — through the daemon's native confirm dialog —
 puts anything on disk.
 
-Read: `enclave_doc_list` (open docs + recents), `enclave_doc_open`
+Read: `scribe_list` (open docs + recents), `scribe_open`
 (path, Post attachment or a colleague's Depot file → doc id),
-`enclave_doc_outline` (the overview tool and the right first call:
+`scribe_outline` (the overview tool and the right first call:
 heading tree with block ids, word counts, where tables and images
-are — a 60-page report in a few hundred tokens), `enclave_doc_read`
+are — a 60-page report in a few hundred tokens), `scribe_read`
 (one section, block range or table, capped so "read the whole
-document" is not accidentally possible), `enclave_doc_find` (matches
-as block ids + snippets), `enclave_doc_styles` (the names this
+document" is not accidentally possible), `scribe_find` (matches
+as block ids + snippets), `scribe_styles` (the names this
 document actually uses, so the agent writes "Heading 2" instead of
-inventing one), `enclave_doc_comments`.
+inventing one), `scribe_comments`.
 
-Acting, all draft-first: `enclave_doc_edit` (the general editor —
+Acting, all draft-first: `scribe_edit` (the general editor —
 operations against block ids: replace text, insert after, delete,
 restyle, insert table or image; returns a **diff** and raises the
-preview in Scribe), `enclave_doc_replace` (find/replace as a
-change-set, expressible without ids), `enclave_doc_fill` (template
+preview in Scribe), `scribe_replace` (find/replace as a
+change-set, expressible without ids), `scribe_fill` (template
 placeholders and content controls — the invoice, the offer letter),
-`enclave_doc_new` (from a template; nothing on disk until saved),
-`enclave_doc_apply` (confirm dialog → apply → save; one apply is one
-Ctrl+Z), `enclave_doc_save_as`, `enclave_doc_export_pdf`, and
-`enclave_doc_send` (to `@person` via the enclaved drop, or to Post
+`scribe_new` (from a template; nothing on disk until saved),
+`scribe_apply` (confirm dialog → apply → save; one apply is one
+Ctrl+Z), `scribe_save_as`, `scribe_export_pdf`, and
+`scribe_send` (to `@person` via the enclaved drop, or to Post
 as an attachment; the dialog names file and destination).
 
 Change-sets carry the document's content hash: if the human typed
@@ -162,14 +162,14 @@ the agent chat.
 
 - **Post → Scribe** — the benchmark sentence: Post fetches the
   attachment, the daemon opens it in Scribe, the agent gets a doc id.
-- **Scribe → Post** — `enclave_doc_send` attaches the saved docx or
+- **Scribe → Post** — `scribe_send` attaches the saved docx or
   PDF to a reply or a new mail; Post's own confirm sends it.
 - **Scribe → enclaved** — "send it to @ale" drops the file onto his
   computer; an offline target rides the send queue.
 - **Depot → Scribe** — open `@carolin`'s file read-only from her
   share; editing offers "save as your own copy", which makes the
   suite's ownership model visible instead of explained.
-- **Ledger → Scribe** — "put the Q3 numbers in the board memo":
+- **Grido → Scribe** — "put the Q3 numbers in the board memo":
   values read from the workbook, written as a table. A copy, not a
   live link.
 - **Scribe → Podium** — "make a deck from this doc": the outline is
