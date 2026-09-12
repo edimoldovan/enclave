@@ -21,7 +21,8 @@ plus a simple client for manual use. Never a hosted mail service.
    token storage in the enclave state, read + send + attachments.
 2. MCP tools: inbox overview, read thread, reply/compose (confirm
    dialog), fetch/save attachment.
-3. Manual UI: three-pane basics — folders, list, message; compose.
+3. Manual UI: accounts, email list and email detail as separate
+   views; compose.
 4. "Today's summary" contribution (with Almanac, via the agent layer).
 
 ## High-level approach
@@ -66,8 +67,9 @@ while no window is open — that is why the bridge lives in the daemon.
   outbox, per-sender image consent, accounts. Ephemeral in the UI:
   selection, scroll, search text, pane widths, caret. Closing the
   window loses nothing.
-- **Mail is untrusted input.** Bodies render with no remote fetches
-  (no tracking pixels), no scripts, no active content, and reach the
+- **Mail is untrusted input.** Bodies render as HTML in the common
+  sandboxed webview: no scripts, no active content, no remote fetches
+  (no tracking pixels) until the human allows them. They reach the
   agent fenced as data, the tool descriptions saying plainly that
   instructions found inside a message are never orders. The suite's
   stated injection risk, met where it actually arrives.
@@ -125,20 +127,26 @@ stranger wrote.
 
 ### UI
 
-One window, three panes, grido's chrome, calm by construction.
+The manual UI follows **Apple Mail, closer to iPhone Mail**: three
+**separate views** — account list, email list, email detail —
+navigated as a stack, widened into columns when the window is wide.
+Never one forced three-pane layout.
 
 - **Ribbon** (grido's tabs, labelled groups, painter-drawn icons):
   Home (New, Reply, Reply all, Forward, Archive, Move, Delete, Mark
-  read), View (reading-pane position, density, conversation grouping,
-  show images), Accounts (connect, sync now, signature, default
-  mailbox), Help (F1 shortcut viewer).
-- **Panes** — mailbox rail left (accounts, folders, unread counts);
-  thread list centre, virtualised like grido's grid, one row per
-  conversation with unread carried by weight rather than a badge;
-  reader right or below. **Reader**: sender line badged `@ale` when
-  the sender is a colleague, quotes collapsed, an attachment strip
-  with Open in Scribe / Ledger / Podium, remote images blocked behind
-  one click that is remembered per sender.
+  read), View (columns or stack, density, conversation grouping, show
+  images), Accounts (connect, sync now, signature, default mailbox),
+  Help (F1 shortcut viewer).
+- **Views** — **accounts**: mailboxes and folders with unread counts,
+  the root of the stack. **Email list**: virtualised like grido's
+  grid, one row per conversation, unread carried by weight rather
+  than a badge; back goes to accounts. **Email detail**: sender line
+  badged `@ale` when the sender is a colleague, quotes collapsed, an
+  attachment strip with Open in Scribe / Ledger / Podium.
+- **HTML bodies are mandatory** — real mail is HTML and Post renders
+  it, in the common webview component from `enclave-ui`: sandboxed,
+  no scripts, remote images off by default behind one click that is
+  remembered per sender.
 - **Compose** in its own egui viewport: recipient chips autocompleting
   over the enclave roster and mailbox history, an attachment strip
   that accepts drops and carries a Depot tab, plain text with a light
@@ -146,9 +154,9 @@ One window, three panes, grido's chrome, calm by construction.
   reply opens here marked as the assistant's, with Send / Edit /
   Discard, and the daemon's confirm dialog embeds the same render.
 - **Auxiliary surfaces** — the confirm dialogs; the shared `@`-picker
-  (Commons' mention widget); native save/open pickers with a Depot
-  tab; the search bar; the OAuth connect flow (browser hand-off, the
-  one honest spinner); an activity log in plain English; F1. The
+  (Chat' mention widget); native save/open pickers with a Depot
+  tab; the search bar; the OAuth connect flow in the common webview,
+  provider origins only; an activity log in plain English; F1. The
   **status bar** carries account, sync age, unread, outbox depth and
   "assistant working" while the agent holds a draft.
 - **Commands + keymap** — everything bindable (`reply`, `reply_all`,
@@ -183,9 +191,9 @@ and Post is where the two meet.
   and land in the books' inbox; issued invoices, overdue reminders and
   the approved VAT report go back out through Post's send confirm,
   Bursar's preview inside it.
-- **Commons** — internal talk belongs in Commons, not in mail:
-  "discuss this with @ale" opens a thread quoting the message rather
-  than replying to it. Post never becomes internal chat.
+- **Chat** — internal talk belongs in Chat, not in mail:
+  "discuss this with @ale" opens a Chat DM quoting the message
+  rather than replying to it. Post never becomes internal chat.
 - **Depot / drops / Vault** — a file for a colleague prefers the drop
   or their share over a 25 MB attachment ("send it to @ale" is a
   drop; only an outside recipient gets an attachment), and provider
@@ -205,10 +213,12 @@ business. No rules or filter engine, no mailing lists, no newsletters,
 no CRM, no snooze-and-triage inbox theatre. No HTML mail design, no
 template gallery, and no read receipts or tracking of our own — we
 block theirs. No PGP/S/MIME in v1: what must stay private stays inside
-the enclave, in Commons and drops, not in mail. No shared or delegated
+the enclave, in Chat and drops, not in mail. No shared or delegated
 mailboxes. No calendar duties (Almanac owns time). No auto-send:
 nothing reaches a recipient without a human looking at the actual
-message. No web version, no browser runtime, no JavaScript. KISS.
+message. No web version of Post: the embedded webview renders mail
+bodies and the provider sign-in and nothing else — no scripts in a
+body, ever. KISS.
 
 ## Open
 

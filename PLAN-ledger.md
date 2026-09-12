@@ -127,7 +127,7 @@ second copy.
   Bursar owns the numbers; Ledger is where they are read.
 - **Ledger → Scribe / Podium.** A range travels into a document or a
   slide as a table: a snapshot of values and formats, never a live link.
-- **Ledger → Commons.** A range pastes into a channel as a small table;
+- **Ledger → Chat.** A range pastes into a channel as a small table;
   the file itself travels as a drop.
 - **Mobile.** Receives workbooks as drops and views them. The phone
   does not edit.

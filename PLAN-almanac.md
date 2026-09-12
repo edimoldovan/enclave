@@ -22,7 +22,8 @@ provider, its own manual UI, and the source of meeting reminders.
 2. MCP tools: today/week overview, next meeting, join link.
 3. Reminder feed into the enclaved daemon (notification n minutes
    before, configurable).
-4. Manual UI: day + week views; event details with join button.
+4. Manual UI: month, week and day grids plus the agenda list; event
+   popovers with a join button.
 5. "Today's summary" contribution (with Post, via the agent layer).
 
 ## High-level approach
@@ -49,8 +50,8 @@ with no window open — the whole reason reminders live there.
   types (`Event`, `Day`, `Calendar`, `Reminder`): the UI never sees
   JSON or a socket, exactly as grido's UI never sees IronCalc. Then
   `state.rs` (`AlmanacApp`), `app.rs` (update loop + dispatch),
-  `commands.rs`, `keymap.rs`, and `ui/{ribbon,week,day,detail,
-  dialogs,icons}.rs`, each adding one `impl AlmanacApp` block.
+  `commands.rs`, `keymap.rs`, and `ui/{ribbon,month,week,day,agenda,
+  popover,dialogs,icons}.rs`, each adding one `impl AlmanacApp` block.
 - **State split** — durable in the daemon: tokens, calendars, cached
   events, reminder schedule, drafts awaiting confirmation. Ephemeral
   in the UI: focused date, view mode, selection, drafts, scroll —
@@ -102,29 +103,40 @@ ships first; creation, when it lands, takes exactly this shape.
 
 ### UI
 
-One window, grido's discipline, calm by construction.
+One window, grido's discipline, calm by construction. The manual UI
+is inspired by **macOS Calendar and iPhone Calendar**: their month,
+week and day grids, their event popovers, and the iPhone **agenda
+list**.
 
 - **Ribbon** (grido's tabs, labelled groups, painter-drawn icons):
-  Home (Today, back/forward, Day/Week, New event, Join), View (week
-  start, working hours, show declined, zoom), Calendars (visibility,
-  colors, sync now, connect), Help (F1 shortcut viewer).
-- **Week view (default)** — seven columns over an hour grid, now-line,
-  all-day band pinned above, events as rounded blocks tinted from the
-  calendar color mixed toward the theme surface, drag to move or
-  resize; egui painter, like grido's grid. **Day view** — one wide
-  column plus a detail rail: attendees with RSVP dots, location, a
-  big Join button, description, attachments. **Left rail** — mini
-  month, calendar checkboxes, "next up" card. **Status bar** — sync
-  age, timezone, next reminder.
+  Home (Today, back/forward, Month/Week/Day/Agenda, New event, Join),
+  View (week start, working hours, show declined, zoom), Calendars
+  (visibility, colors, sync now, connect), Help (F1 shortcut viewer).
+- **Month view** — the macOS Calendar grid: six week rows, events as
+  tinted chips, overflow as "+3 more", today marked, the selected day
+  spilling into the agenda list. **Week view (default)** — seven
+  columns over an hour grid, now-line, all-day band pinned above,
+  events as rounded blocks tinted from the calendar color mixed
+  toward the theme surface, drag to move or resize; egui painter,
+  like grido's grid. **Day view** — one wide column over the same
+  grid. **Agenda list** — the iPhone view: events as a continuous
+  scrolling list under day headers, the phone-shaped face of the
+  product and what a narrow window falls back to.
+- **Event popover** — clicking an event opens it in place, macOS
+  Calendar's way rather than a modal: title, time, attendees with
+  RSVP dots, location, a big Join button, description, attachments,
+  Edit and Delete. **Left rail** — mini month, calendar checkboxes,
+  "next up" card. **Status bar** — sync age, timezone, next reminder.
 - **Auxiliary surfaces** — event editor; people picker with
-  `@`-autocomplete over the enclave roster (Commons' mention widget);
+  `@`-autocomplete over the enclave roster (Chat' mention widget);
   free/busy overlay shading attendees' busy blocks behind the week
   grid; go-to-date; search; the daemon's confirm previews; the
   reminder toast (Join / Snooze / Open); backstage (provider, lead
   time, working hours).
 - **Commands + keymap** — everything bindable (`today`, `next_week`,
-  `view_day`, `new_event`, `join_call`, `rsvp_yes`, `refresh`,
-  `shortcut_help`, …) in `keymap.toml`, grido's lookup order, F1.
+  `view_month`, `view_week`, `view_day`, `view_agenda`, `new_event`,
+  `join_call`, `rsvp_yes`, `refresh`, `shortcut_help`, …) in
+  `keymap.toml`, grido's lookup order, F1.
 - **Theming and type** — grido's `theme.rs` unchanged: Omarchy
   `colors.toml`, every surface derived from bg/fg/accent, live theme
   switches, light themes real. One type scale, tabular figures for
@@ -136,8 +148,8 @@ One window, grido's discipline, calm by construction.
 - **enclaved** — socket, notifications, identity: `@person` resolves
   through the daemon's roster, so "invite @ale and @fredrik" becomes
   real addresses. Almanac has no notifier of its own.
-- **Commons** — internal meetings carry a Commons link, not Zoom;
-  "join my next call" opens the Commons call window, external links
+- **Chat** — internal meetings carry a Chat link, not Zoom;
+  "join my next call" opens the Chat call window, external links
   open the browser, and a meeting can announce itself in its channel.
 - **Post** — invitations arrive as mail and Post hands the .ics to
   `enclave_calendar_draft`, so RSVP never leaves the agent chat;
@@ -152,7 +164,7 @@ One window, grido's discipline, calm by construction.
   the secret itself.
 - **Bursar / Mobile** — filing deadlines (VAT, annual figures) land
   as events on the same notifier; the phone shows the same agenda and
-  gets the same reminders, and joining there opens Commons mobile.
+  gets the same reminders, and joining there opens Chat mobile.
 
 ### Non-goals
 

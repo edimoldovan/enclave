@@ -8,7 +8,7 @@ company network. The products:
 | **enclaved** | the private network client — built |
 | **Post** | mail |
 | **Almanac** | calendar |
-| **Commons** | team chat + calls |
+| **Chat** | team chat + calls |
 | **Scribe** | documents |
 | **Ledger** | spreadsheets (repo `grido/`) |
 | **Bursar** | accounting |
@@ -40,7 +40,7 @@ Named as places inside the enclave, always branded with the house mark
 3. **Almanac** — calendar: same bridge model, its own product: today's
    meetings, reminders, call links to click or have the agent join.
    Like every product, it has its own manual UI.
-4. **Commons** — a simplified Slack with Zoom-like calls among
+4. **Chat** — a simplified Slack with Zoom-like calls among
    enclave members. Serverless: messages are append-only logs in a
    `Chat/` folder inside each member's Enclaved folder, replicated
    machine-to-machine over the enclave; an offline member catches up
@@ -97,7 +97,7 @@ Use-case coverage:
   links; the agent opens the link).
 - Meeting reminders in the single UI → enclaved notifications + agent
   layer.
-- Team chat, calls, sharing → Commons (+ enclaved file drop).
+- Team chat, calls, sharing → Chat (+ enclaved file drop).
 - "Open a docx, edit, save, email to X" → Scribe + Post.
 - "Check X's feedback, open the attachment" → Post + Scribe + agent
   layer.
@@ -120,7 +120,7 @@ Suite architecture (settled):
 - **Every UI / desktop app is Rust** (egui, as grido already proves
   out). The current Fyne tray moves to Rust with it.
 - **The tray is the launcher.** Every product's manual UI starts from
-  the tray app's context menu (Post, Almanac, Commons, …) — one place
+  the tray app's context menu (Post, Almanac, Chat, …) — one place
   to find the suite, no separate dock icons or start-menu clutter to
   hunt through. Products can also open via the agent ("open the
   attachment in Scribe") and OS file associations where they fit.
@@ -145,26 +145,45 @@ Suite architecture (settled):
   notices the mismatch and asks the daemon to restart itself, so UI
   and daemon always run as a matched pair.
 
+- **One shared layer, two crates.** `enclave-ui` is the design
+  system every product wears: grido's theme generalized (Omarchy
+  `colors.toml` on Linux, system accent on macOS/Windows, every
+  surface derived from bg/fg/accent, light and dark first-class),
+  one type scale, one spacing scale, the painter-drawn icon set, the
+  ribbon kit (tabs, labelled groups, icon band with one shared label
+  line), the widgets (buttons, fields, dropdowns, checkboxes,
+  list/detail split view, toasts, empty states, the @-picker, the
+  confirm-dialog viewport), window chrome, the keymap loader +
+  command registry, the F1 shortcut viewer. `enclave-client` is the
+  only crate that opens the daemon socket: typed API, subscribe
+  events, the `version` op — product UIs never see JSON or a socket.
+  No product ships its own theme, icons, ribbon, widgets or socket
+  code.
+- **HTML is a component, not a platform.** One sandboxed webview
+  (wry) in enclave-ui, used only where HTML is mandatory: Post's
+  email bodies (remote images off by default) and provider OAuth
+  sign-in. Nowhere else. OAuth tokens live in the OS keychain,
+  through enclave-client.
 - **@-addressing, one scheme everywhere.** Enclave members and their
   computers are addressed as `@person` (their email or the part before
   its @; resolves to their one online computer, ambiguity is an error
   naming the options) and `@person/computer` for a specific machine.
   The scheme is baked into the MCP tool descriptions so any agent chat
-  resolves "send this to @ale" — and Commons uses the same mentions
+  resolves "send this to @ale" — and Chat uses the same mentions
   with real autocomplete. UX rule: an address means the same thing in
   every product and in the agent.
 
 - **Mobile: one native app, many features** — same model as desktop.
   A single native app per platform (iOS, Android) that joins the
   phone to the enclave and carries the suite's mobile-worthy faces:
-  Commons chat + calls, meeting reminders, Post/Almanac overviews,
+  Chat (chat + calls), meeting reminders, Post/Almanac overviews,
   Vault, browsing colleagues' Depot shares, receiving drops. Not a
   port of the editors — the phone is for reaching, reading, and
   replying.
 
 Process: one project, one codebase. Each product has a plan file
 here — PLAN-enclaved.md, PLAN-post.md, PLAN-almanac.md,
-PLAN-commons.md, PLAN-scribe.md, PLAN-ledger.md, PLAN-bursar.md,
+PLAN-chat.md, PLAN-scribe.md, PLAN-ledger.md, PLAN-bursar.md,
 PLAN-depot.md, PLAN-vault.md, PLAN-podium.md, PLAN-mobile.md —
 implementation is then delegated to Opus 5 agents.
 

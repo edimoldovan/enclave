@@ -158,7 +158,7 @@ own sake. Every action is a registry command, so every action binds.
   `@ale/laptop` to pick the machine, send queue when she is offline.
 - **Depot** — open a colleague's deck read-only from their share;
   fetch a copy to make it yours. The open dialog has a Depot tab.
-- **Commons** — present into a call: the audience viewport is the
+- **Chat** — present into a call: the audience viewport is the
   screen-share source; "@here presenting now" posts the deck.
 - **Almanac** — "the deck for my 10:00" opens the meeting's
   attachment; enclaved fires the reminder; present mode offers the

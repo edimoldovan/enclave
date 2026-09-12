@@ -162,7 +162,7 @@ red reserved for overdue and unbalanced.
 - **Scribe**: the annual report's prose (förvaltningsberättelse) is a
   .docx opened with the approved figures already filled in.
 - **Podium**: quarterly figures land in a deck on request.
-- **Commons**: "ask @ale about this expense" opens a thread with the
+- **Chat**: "ask @ale about this expense" opens a thread with the
   receipt attached and a link back to the item.
 - **Vault**: bank, Skatteverket ombud and provider credentials live
   there, never in `books.db`.

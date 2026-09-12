@@ -1,4 +1,4 @@
-# Plan: Enclave Commons
+# Plan: Enclave Chat
 
 Team chat + calls for the enclave: a simplified Slack with Zoom-like
 calls, serverless — no server ever holds company chat.
@@ -10,33 +10,37 @@ calls, serverless — no server ever holds company chat.
   machine-to-machine over the enclave. An offline member catches up
   from any online peer that has the history (gossip).
 - **Calls are live P2P** over the enclave — nothing stored.
+- **Deliberately very easy.** **No threads**: conversations are flat,
+  channels and DMs, one scrolling list each. **Copy-paste works
+  everywhere**: text, images and files paste into the composer from
+  the clipboard, and messages, images and attachments copy back out.
 - **@-addressing**: mentions use the suite scheme (`@person`,
   `@person/computer`) with real autocomplete in the UI.
 - **Manual UI** in Rust (egui) from the tray / app search stub;
   MCP tools through the enclaved daemon socket (read channels, post —
   posting confirms via the daemon dialog).
-- **Mobile carries Commons** (chat + calls) in the native mobile app.
+- **Mobile carries Chat** (chat + calls) in the native mobile app.
 
 ## Starter roadmap
 
 1. Message model: append-only per-sender logs, ordering, gossip
    catch-up between peers; channels + DMs.
 2. Replication over the enclave (drop-port style protocol).
-3. UI: channel list, thread view, mentions with autocomplete,
-   file sharing via enclaved drops.
+3. UI: channel list, conversation view, mentions with autocomplete,
+   file sharing via enclaved drops and clipboard paste.
 4. Calls: 1:1 audio first (P2P over the tailnet), then group + video +
    screen share.
 5. MCP tools: unread overview, read channel, post message.
 
 ## High-level approach
 
-Commons is the one product whose engine must keep working with **no
+Chat is the one product whose engine must keep working with **no
 window open**: messages arrive, logs replicate, calls ring. The Go
 module inside enclaved *is* the product; the Rust window is a view.
 
 ### Architecture
 
-- **`enclaved/internal/commons/` (Go)** — log store, gossip, channel
+- **`enclaved/internal/chat/` (Go)** — log store, gossip, channel
   membership, unread state, notifications, call signalling, and the
   IPC ops behind the MCP tools. It speaks people, channels, messages
   and calls; no UI concepts leak in.
@@ -46,11 +50,11 @@ module inside enclaved *is* the product; the Rust window is a view.
   other people's logs this machine received. A rebuildable SQLite
   index over them answers channel views, unreads and search.
 - **Ordering without a server**: a record carries its author's
-  sequence number and a vector of what that author had seen, so a
-  reply never renders before its parent; display order is (timestamp,
-  author) with a stable tiebreak. Records are immutable — an edit or
-  retraction is a new record pointing at the old one, the only honest
-  way to change something already on six machines.
+  sequence number and a vector of what that author had seen, so an
+  answer never renders before what it answers; display order is
+  (timestamp, author) with a stable tiebreak. Records are immutable —
+  an edit or retraction is a new record pointing at the old one, the
+  only honest way to change something already on six machines.
 - **Gossip**: on any peer connection, trade a have-vector (author →
   last seq) and pull the gaps; whoever is online and holds the history
   serves it, so a new member catches up from anyone. One more stream
@@ -63,14 +67,14 @@ module inside enclaved *is* the product; the Rust window is a view.
   is userspace and invisible to other processes, so media rides a
   framed local channel to the daemon, which relays it onto the tailnet
   and models none of it — machine to machine, nothing stored.
-- **`commons/` in the Rust app — grido's split verbatim.**
+- **`chat/` in the Rust app — grido's split verbatim.**
   `client.rs` is the only file that opens the socket, handing up plain
   types (`Channel`, `Message`, `Person`, `Call`, `Unread`): the UI
   never sees JSON or a socket, as grido's never sees IronCalc.
   `media.rs` is the second such boundary, equally off-limits to `ui/`.
-  Then `state.rs` (`CommonsApp`), `app.rs` (update loop + dispatch),
-  `commands.rs`, `keymap.rs`, `ui/{sidebar,thread,composer,call,
-  header,dialogs,icons}.rs`, one `impl` block each.
+  Then `state.rs` (`ChatApp`), `app.rs` (update loop + dispatch),
+  `commands.rs`, `keymap.rs`, `ui/{sidebar,conversation,composer,
+  call,header,dialogs,icons}.rs`, one `impl` block each.
 - **State split** — durable in the daemon: logs, index, membership,
   read marks, mutes, drafts, pending confirmations, call state.
   Ephemeral in the UI: scroll, selection, the audio pipeline. Closing
@@ -86,12 +90,12 @@ door a message leaves by.
 Read:
 
 - `enclave_chat_overview` — unread across channels and DMs, one capped
-  line each, mentions first. The first call, and Commons' share of
+  line each, mentions first. The first call, and Chat' share of
   "today's summary". `enclave_chat_channels` lists them all: purpose,
   members, last activity, unread, muted.
 - `enclave_chat_read` — a window of one channel or DM: messages with
   stable refs, `@author`, time, attachment refs; capped, defaulting to
-  what is unread. `enclave_chat_thread` — one thread whole.
+  what is unread. There is no thread to read — a conversation is flat.
 - `enclave_chat_search` — text, author, channel or range → refs and
   snippets. `enclave_chat_mentions` — where the user was named,
   answered and not: "did anyone need me?" in one call.
@@ -100,12 +104,12 @@ Read:
 
 Acting (draft first, then the dialog):
 
-- `enclave_chat_draft` — compose for a channel, DM or thread: resolves
+- `enclave_chat_draft` — compose for a channel or DM: resolves
   `@mentions`, attaches files, returns the rendered message and a
   `draft_id`. Posts nothing, so iterating is free.
-- `enclave_chat_post` / `enclave_chat_reply` — post a draft, or reply
-  under a parent. The dialog *is* the preview: the message as it will
-  look, the channel, who gets woken ("@here — notifies 7 people").
+- `enclave_chat_post` — post a draft. The dialog *is* the preview:
+  the message as it will look, the channel, who gets woken ("@here —
+  notifies 7 people").
 - `enclave_chat_share_file` — a file into a channel: a drop, or a
   reference into the sender's Depot share when it is large; the dialog
   names file, size and destination.
@@ -133,15 +137,18 @@ model fenced as data, never as orders.
 ### UI
 
 One window, three columns, grido's chrome vocabulary without four rows
-of ribbon over a message list.
+of ribbon over a message list. Easy on purpose: flat conversations, no
+threads to keep track of, and paste anything anywhere.
 
 - **Rail** (left, only with several enclaves) — enclaves with unread
   dots. **Sidebar** — search, channels, DMs, people with online dots;
   muted dimmed.
-- **Thread pane** — messages grouped by author, day separators, an
-  unread line, mentions tinted with the accent, times in tabular
-  figures; virtualised like grido's grid, layouts cached per message.
-  Attachments are file cards (name, size, whose machine, Open / Save).
+- **Conversation pane** — one flat scrolling list: messages grouped
+  by author, day separators, an unread line, mentions tinted with the
+  accent, times in tabular figures; virtualised like grido's grid,
+  layouts cached per message. Answering someone is a message that
+  quotes them, not a side channel. Attachments are file cards (name,
+  size, whose machine, Open / Save).
 - **Header strip** — channel, purpose, members, call, search: grido's
   ribbon geometry (icon band over one shared label line, painter-drawn
   icons) shrunk to one row, because a chat window earns one row of
@@ -149,8 +156,12 @@ of ribbon over a message list.
   enclaves, notification rules, retention, devices, assistant status.
 - **Composer** — autogrowing, `@` autocomplete over the roster (the
   widget Post and Almanac borrow), `#` for channels, drop a file to
-  attach, Enter sends and Shift+Enter breaks — both bindable. **Right
-  pane**, on demand: a thread, channel details, or the call.
+  attach, Enter sends and Shift+Enter breaks — both bindable.
+  **Paste is a first-class input**: text, a screenshot or an image
+  from the clipboard, and files copied in the file manager all paste
+  in and attach; copy goes the other way, out of a message, an image
+  or an attachment. **Right pane**, on demand: channel details or the
+  call.
 - **Call window** — a second egui viewport, as Podium's present mode:
   participant tiles, a speaking ring, mute / camera / screen share /
   leave, network quality in words; minimised, a call bar above the
@@ -161,7 +172,8 @@ of ribbon over a message list.
   switcher; device picker; toasts with Reply and Mute; F1 shortcut
   viewer generated off the command registry, which every action goes
   through (`quick_switch`, `next_unread`, `send_message`,
-  `start_thread`, `toggle_mute`, `call_answer`, `call_mute_mic`, …)
+  `quote_message`, `copy_message`, `paste`, `toggle_mute`,
+  `call_answer`, `call_mute_mic`, …)
   and `keymap.toml` binds, in grido's lookup order.
 - **Theming and type** — grido's `theme.rs` unchanged: Omarchy
   `colors.toml`, every surface derived, live switches, light themes
@@ -177,13 +189,13 @@ of ribbon over a message list.
   protocol carrying logs and attachments, notifications, the confirm
   dialogs, and the offline send queue, which is why a message to a
   sleeping colleague lands later instead of failing.
-- **Almanac** — internal meetings carry a Commons call link, not Zoom;
+- **Almanac** — internal meetings carry a Chat call link, not Zoom;
   the reminder's Join opens the call window, and a meeting can
   announce itself in its channel ("@here standup in 5").
-- **Post** — an outside thread continues inside: a mail forwards into
-  a channel as a reference card, the mail staying in Post; "answer him
-  in mail" hands the text to `enclave_mail_draft`, whose own confirm
-  sends it. Chat never becomes a mail client.
+- **Post** — an outside mail conversation continues inside: a mail
+  forwards into a channel as a reference card, the mail staying in
+  Post; "answer him in mail" hands the text to `enclave_mail_draft`,
+  whose own confirm sends it. Chat never becomes a mail client.
 - **Scribe / Ledger / Podium** — a document shared in a channel rides
   a drop and opens natively; a Ledger range pastes as a small table;
   Podium presents into a call, its audience viewport being the
@@ -194,15 +206,15 @@ of ribbon over a message list.
 - **Vault** — a log replicates forever, so it must never hold a
   secret: something credential-shaped in the composer offers "put it
   in Vault and post the entry name" — the message carries the name.
-- **Bursar** — "ask @ale about this expense" opens a thread with the
+- **Bursar** — "ask @ale about this expense" opens a DM with the
   item card attached; his answer comes back as a message, while the
   decision still happens behind Bursar's own confirm.
 - **Mobile** — the existential mobile feature: the same channels over
   a recent window, content-free push wake-ups, calls that ring from
   the lock screen, mentions that notify.
 - **The agent layer** — "did anything need me while I was out?" is
-  Commons' overview beside Post's inbox and Almanac's agenda, one
-  answer; and Commons is where the agent reaches a *colleague* rather
+  Chat' overview beside Post's inbox and Almanac's agenda, one
+  answer; and Chat is where the agent reaches a *colleague* rather
   than a file.
 
 ### Non-goals
@@ -211,8 +223,8 @@ No server, ever: no hosted history, no cloud copy, no bridge to Slack,
 Teams, Discord or Matrix, no guests or external users — enclave
 membership is the whole ACL. No app platform: no bots, webhooks,
 slash-command directory, custom emoji uploads, per-channel themes. No
-channel hierarchy, no workspaces inside an enclave, no threads inside
-threads — one flat list per enclave. No rich text beyond plain
+channel hierarchy, no workspaces inside an enclave, and no threads at
+all — a conversation is one flat list. No rich text beyond plain
 markdown; canvases, wikis and docs are Scribe's job. No read receipts,
 typing indicators, away states or custom statuses — presence is
 whether the machine is on. No call recording or transcription: nothing

@@ -157,7 +157,7 @@ spacing, sentence case, no icon soup.
 
 Scribe is the suite's document surface; most document flows end or
 start here, and every destination field takes `@person` or
-`@person/computer` — the same string that works in Commons and in
+`@person/computer` — the same string that works in Chat and in
 the agent chat.
 
 - **Post → Scribe** — the benchmark sentence: Post fetches the
@@ -179,8 +179,8 @@ the agent chat.
   the numbers, Scribe owns the page.
 - **Almanac → Scribe** — "write the minutes for tomorrow's board
   meeting" opens a document titled from the calendar entry; a
-  meeting link inside it is a Commons call.
-- **Commons → Scribe** — a document shared in a channel rides an
+  meeting link inside it is a Chat call.
+- **Chat → Scribe** — a document shared in a channel rides an
   enclaved drop; the message carries the reference, clicking opens
   Scribe.
 - **Vault → Scribe** — a password-protected docx takes its

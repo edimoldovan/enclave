@@ -179,7 +179,7 @@ The socket, the roster, the notifier and the confirm for all of them.
   as a drop, not as mail; incoming ones go to `enclave_open`.
 - **Almanac** — the reminder schedule lives in the daemon, so a closed
   window still reminds; the notification path is the drop path.
-- **Commons** — chat logs replicate machine-to-machine on the same
+- **Chat** — chat logs replicate machine-to-machine on the same
   tailnet and drop-style protocol; mentions autocomplete from the
   daemon's roster; calls dial peers' enclave addresses.
 - **Scribe / Ledger / Podium** — "send it to @ale" is

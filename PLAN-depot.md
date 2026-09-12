@@ -170,7 +170,7 @@ One window: a calm two-pane browser on grido's furniture.
   is a publish. Depot never mails.
 - **Bursar** — the year's exports sit in the owner's share and the
   accountant fetches them read-only: no second set of books.
-- **Commons** — a message carries a Depot address, so a big file is
+- **Chat** — a message carries a Depot address, so a big file is
   referenced rather than replicated into everyone's log.
 - **Almanac** — a meeting's pre-read lives in the organiser's share and
   the event card links to it; nothing is duplicated.

@@ -66,7 +66,7 @@ the design.
 whole vault — secrets are tiny, and offline is exactly when you need
 them. Versions append with an HLC stamp; last-writer-wins per entry,
 history kept, deletes are tombstones; a machine that was off catches
-up from any peer that is on, as Commons does. No server copy.
+up from any peer that is on, as Chat does. No server copy.
 
 **Unlock is daemon state**, not a UI mode: unwrapped at login
 (keychain, biometrics where they exist) or by passphrase, auto-locked
@@ -189,7 +189,7 @@ the platform allows.
   here, not in a config file. "Email @ale the wifi password" is
   refused and turned into a grant: the reference travels, the value
   never does.
-- **Commons** — "share from Vault" in the composer posts an entry
+- **Chat** — "share from Vault" in the composer posts an entry
   *reference*; clicking it asks Vault, not the channel. Secrets stop
   being pasted into chat, which is the actual disease.
 - **Almanac** — a meeting needing a shared credential links the entry

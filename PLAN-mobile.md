@@ -7,7 +7,7 @@ editors. The phone is for reaching, reading, and replying.
 ## Settled (from the suite plan)
 
 - **One app, many features**, mirroring the desktop model.
-- Carries: Commons chat + calls, meeting reminders, Post/Almanac
+- Carries: Chat (chat + calls), meeting reminders, Post/Almanac
   overviews, Vault, browsing Depot shares, receiving drops.
 - The phone is a real enclave member: a node on the tailnet
   (Tailscale ships iOS/Android network extensions — the join model
@@ -19,7 +19,7 @@ editors. The phone is for reaching, reading, and replying.
    app on both platforms, join an enclave, reach a peer.
 2. Join flow: paste the invite code, autostart/always-on VPN
    profile.
-3. Commons first (chat, then calls) — the existential mobile
+3. Chat first (chat, then calls) — the existential mobile
    feature.
 4. Notifications: drops received, meeting reminders, mentions.
 5. Vault read + Depot browse + Post/Almanac overviews.
@@ -30,7 +30,7 @@ editors. The phone is for reaching, reading, and replying.
 
 **The same split as the desktop, in a different host process.** The
 headless half is the *same Go daemon module* the desktop runs —
-enclave state, tailnet nodes, drops, Commons replication, Vault
+enclave state, tailnet nodes, drops, Chat replication, Vault
 store, the approval channel — built with `gomobile bind` into an
 `.xcframework` / `.aar`. The UI half is native per platform: SwiftUI
 on iOS, Compose on Android. No egui on the phone, no shared UI
@@ -51,7 +51,7 @@ toolkit.
   the iOS extension has a hard memory ceiling and no camera.
 - **State**: authoritative state is the daemon's — memberships, the
   session token (Keychain / Keystore, never a file), peer roster,
-  send queue, the recent Commons window, the Vault store, pending
+  send queue, the recent Chat window, the Vault store, pending
   approvals. The app holds view state only: navigation, drafts,
   scroll, the live call, thumbnails. Kill it and nothing is lost.
 - **grido's discipline, native idioms.** `EnclaveKit` (Swift) /
@@ -62,7 +62,7 @@ toolkit.
   ironcalc. Layout: `core/` (Go), `ios/{EnclaveKit,Enclave,
   EnclaveTunnel}`, `android/{core,app}`.
 - **The command registry survives; keymap.toml does not.** Every
-  action is a named command (`commons.send`, `depot.fetch`,
+  action is a named command (`chat.send`, `depot.fetch`,
   `vault.reveal`, `call.join`) dispatched in one place; with no key
   chords on a phone the bindings become App Intents / App Actions,
   share-sheet and notification actions, assistant phrases.
@@ -98,7 +98,7 @@ the user is there, on the phone when they are not):
   back to revise; the human sees a rendered preview, not JSON.
 - `enclave_notify_phone` — a nudge with no decision attached ("the
   VAT draft is ready").
-- `enclave_open_on_phone` — handoff: open a Commons thread, a Depot
+- `enclave_open_on_phone` — handoff: open a Chat thread, a Depot
   path, a call link or a received file on the phone.
 
 Rules: overviews answer in a handful of lines; every preview is a
@@ -112,7 +112,7 @@ approves.
 **One app, five destinations** — iOS `TabView`, Android bottom bar,
 identical information architecture:
 
-1. **Commons** — channels and DMs, thread view, composer with `@`
+1. **Chat** — channels and DMs, thread view, composer with `@`
    autocomplete; call button in the thread header.
 2. **Today** — Almanac's next meetings with a Join button, Post's
    unread summary, reminders. The mobile face of "today's summary".
@@ -144,7 +144,7 @@ Material You from the wallpaper, Enclave green as accent and
 fallback; light and dark both first class, no in-app picker.
 **Calm typography** — platform faces at generous sizes, Dynamic Type
 honoured, few weights, no display face beyond the brand mark.
-Generous spacing, one accent, no badge soup (unread counts on Commons
+Generous spacing, one accent, no badge soup (unread counts on Chat
 and nowhere else). **Empty states carry the voice** ("Nothing yet —
 anything a colleague drops on this phone lands here") and name the
 next action; **offline is a state, not an error**: "Ana's machine is
@@ -156,10 +156,10 @@ offline", the desktop's own words.
   `enclave_computers`, receives drops into Files, sends via the share
   extension. "Send to @ale" works from the phone exactly as from the
   desk; the offline send queue covers a sleeping laptop.
-- **Commons** — the flagship. Same append-only logs gossiped over the
+- **Chat** — the flagship. Same append-only logs gossiped over the
   enclave, but the phone keeps a *recent window* and pulls older
   threads on demand. Calls are P2P over the tunnel.
-- **Almanac** — reminders arrive as push; Join opens a Commons call
+- **Almanac** — reminders arrive as push; Join opens a Chat call
   or the provider's link.
 - **Post** — inbox overview, read and reply; an attachment you cannot
   edit becomes "open on my laptop" — a drop to `@ed/laptop` that
@@ -185,7 +185,7 @@ admin dashboard — invites and removals stay on the web. An agent
 runtime on the phone. React Native, Flutter or a web app: native per
 platform, no shared UI toolkit. Any server-side copy to make mobile
 convenient — no hosted message store, no file cache, no "mobile sync"
-tier; wake-ups stay content-free. Full Commons history on the device.
+tier; wake-ups stay content-free. Full Chat history on the device.
 Offline writes beyond a queued message or drop. Tablet layouts in v1.
 A Podium presenter remote. Custom crypto — the enclave's identity and
 the tailnet are the whole trust story. KISS.
