@@ -153,50 +153,126 @@ fn render(value: &Value) -> String {
     }
 }
 
-/// `sheetz mcp`: copy lines between this process's stdio and the app's socket.
+/// `sheetz mcp`: answer the handshake here, and only reach for the app when a
+/// tool is actually called.
 ///
-/// If nothing is listening the GUI is started first, so an assistant can open
-/// Sheetz by itself rather than erroring at the user.
+/// Connecting an MCP client must never open a window: clients launch this
+/// process at session start and list tools whether or not anything is used.
+/// The handshake is the same binary's own answers, so it matches the app's.
+/// The first `tools/call` connects, starting the GUI if nothing is listening,
+/// and from then on every line is proxied verbatim in both directions.
 pub fn stdio_shim() -> std::io::Result<()> {
+    let stdin = std::io::stdin().lock();
+    let mut to_app: Option<UnixStream> = None;
+    let mut pump: Option<std::thread::JoinHandle<()>> = None;
+
+    for line in stdin.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(app) = to_app.as_mut() {
+            writeln!(app, "{line}")?;
+            app.flush()?;
+            continue;
+        }
+        if method_of(&line) == "tools/call" {
+            let mut app = connect_to_app()?;
+            let from_app = handshake(&mut app)?;
+            // Socket → stdout on its own thread; stdin → socket stays here.
+            pump = Some(std::thread::spawn(move || pump_to_stdout(from_app)));
+            writeln!(app, "{line}")?;
+            app.flush()?;
+            to_app = Some(app);
+            continue;
+        }
+        // initialize, ping, tools/list — answered locally. tools/call never
+        // gets here, so the app-side branch of this handler is unreachable.
+        if let Some(response) = handle_message(&line) {
+            let mut stdout = std::io::stdout();
+            writeln!(stdout, "{response}")?;
+            stdout.flush()?;
+        }
+    }
+
+    // The client closed stdin: say so on the socket, then let the pump finish
+    // writing whatever the app still owes before this process goes away.
+    if let Some(app) = to_app {
+        let _ = app.shutdown(std::net::Shutdown::Write);
+    }
+    if let Some(pump) = pump {
+        let _ = pump.join();
+    }
+    Ok(())
+}
+
+fn method_of(line: &str) -> String {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|m| m.get("method").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Connects, starting the GUI if nothing is listening yet.
+fn connect_to_app() -> std::io::Result<UnixStream> {
     let path = socket_path();
-    let stream = match UnixStream::connect(&path) {
-        Ok(s) => s,
+    match UnixStream::connect(&path) {
+        Ok(s) => Ok(s),
         Err(_) => {
             launch_gui();
-            wait_for_socket(&path)?
+            wait_for_socket(&path)
         }
-    };
+    }
+}
 
-    let mut to_app = stream.try_clone()?;
-    let from_app = stream;
+/// Replays `initialize` to the app under an id no client uses, and swallows
+/// everything up to its answer. Returns the reader to keep proxying with, so
+/// no buffered line is lost.
+fn handshake(app: &mut UnixStream) -> std::io::Result<BufReader<UnixStream>> {
+    const ID: &str = "shim-init";
+    let request = json!({
+        "jsonrpc": "2.0", "id": ID, "method": "initialize",
+        "params": {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "sheetz-shim", "version": env!("CARGO_PKG_VERSION") },
+        }
+    });
+    writeln!(app, "{request}")?;
+    app.flush()?;
 
-    // Socket → stdout on its own thread; stdin → socket on this one.
-    std::thread::spawn(move || {
-        let mut stdout = std::io::stdout().lock();
-        let mut reader = BufReader::new(from_app);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if stdout.write_all(line.as_bytes()).is_err() || stdout.flush().is_err() {
-                        break;
-                    }
+    let mut reader = BufReader::new(app.try_clone()?);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err(std::io::Error::other("the Sheetz window closed"));
+        }
+        let id = serde_json::from_str::<Value>(&line)
+            .ok()
+            .and_then(|m| m.get("id").and_then(Value::as_str).map(str::to_owned));
+        if id.as_deref() == Some(ID) {
+            return Ok(reader);
+        }
+    }
+}
+
+fn pump_to_stdout(mut from_app: BufReader<UnixStream>) {
+    let mut stdout = std::io::stdout().lock();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match from_app.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                if stdout.write_all(line.as_bytes()).is_err() || stdout.flush().is_err() {
+                    break;
                 }
             }
         }
-        // The app went away; a client waiting on stdin should not hang.
-        std::process::exit(0);
-    });
-
-    let stdin = std::io::stdin().lock();
-    for line in stdin.lines() {
-        let line = line?;
-        writeln!(to_app, "{line}")?;
-        to_app.flush()?;
     }
-    Ok(())
+    // The app went away; a client waiting on stdin should not hang.
+    std::process::exit(0);
 }
 
 fn launch_gui() {
