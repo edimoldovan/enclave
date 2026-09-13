@@ -205,11 +205,29 @@ fn every_advertised_tool_is_classified() {
         "grido_find",
         "grido_stats",
     ];
+    // Mail's whole v1 surface is free: it reads, it flips a read flag, it moves
+    // a message to a trash it can be pulled back out of, or it puts the window
+    // on screen. Named one by one so the next verb has to be thought about
+    // rather than swept in.
+    const MAIL: [&str; 8] = [
+        "post_accounts",
+        "post_add_account",
+        "post_list",
+        "post_read",
+        "post_mark",
+        "post_delete",
+        "post_attachment",
+        "post_show",
+    ];
     let mut acted = 0;
     let mut read = 0;
     for tool in enclave::mcp::proto::definitions() {
         let name = tool["name"].as_str().expect("every tool has a name");
-        if READS.contains(&name) || name == "enclave_status" || name == "enclave_computers" {
+        if READS.contains(&name)
+            || MAIL.contains(&name)
+            || name == "enclave_status"
+            || name == "enclave_computers"
+        {
             assert!(!acting(name), "{name} only looks; it must not ask");
             read += 1;
         } else {
@@ -217,12 +235,18 @@ fn every_advertised_tool_is_classified() {
             acted += 1;
         }
     }
-    // The whole surface, not a subset of it: 20 grido verbs and 3 enclave ones.
-    assert_eq!(read + acted, 23, "the tool count changed; check this list");
-    assert_eq!(read, 8);
+    // The whole surface, not a subset of it: 20 grido verbs, 7 post ones plus
+    // post_show, and 3 of the enclave's own.
+    assert_eq!(read + acted, 31, "the tool count changed; check this list");
+    assert_eq!(read, 16);
     assert!(acting("enclave_send_file"));
-    // A grido verb added later is asked about until someone says otherwise.
+    // Opening the window is free however it is asked for: it shows the user
+    // their own mail and changes nothing.
+    assert!(!acting("post_show"));
+    // A verb added later under a known prefix is asked about until someone says
+    // otherwise — post_send must not arrive free.
     assert!(acting("grido_something_new"));
+    assert!(acting("post_send"));
     // Nothing outside the product's own names is in the set at all.
     assert!(!acting("workbook_info"));
     assert!(!acting("rm"));

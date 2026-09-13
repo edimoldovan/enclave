@@ -33,6 +33,21 @@ fn every_message_survives_the_round_trip() {
             id: None,
             path: None,
         },
+        Msg::View {
+            id: Some(1),
+            account: Some("ed@acme.com".to_string()),
+            message: Some("18f3a2c9b1".to_string()),
+        },
+        Msg::View {
+            id: Some(2),
+            account: Some("ed@acme.com".to_string()),
+            message: None,
+        },
+        Msg::View {
+            id: None,
+            account: None,
+            message: None,
+        },
         Msg::Call {
             id: 3,
             tool: "grido_cell_set".to_string(),

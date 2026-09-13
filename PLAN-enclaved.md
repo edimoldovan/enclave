@@ -27,16 +27,22 @@ what changes.
   their one online computer, ambiguity is an error naming options)
   and `@person/computer` — resolved in the daemon, spelled out in
   the MCP tool descriptions, same scheme in every product.
-- **Confirm dialogs live in the daemon**: acting MCP tools (send
-  file, send mail, …) pop a native dialog — a hijacked agent can
-  never both decide and approve. Read tools run freely. Per-action
-  allowlists are opt-in. Interim: the broker lives in the Rust
-  server process until the Go daemon absorbs it.
-- **One process per product UI**: the server process (socket, MCP,
-  confirm viewport, later the tray) is separate from product UI
-  processes — all the same executable. Product calls route over the
-  local socket to the product's process; one slow canvas never
-  stalls another window.
+- **No server process — there are only the daemon, the shim, and
+  the apps.** Nothing in the package needs a hub: the client spawns
+  `enclave mcp` per chat session; the shim routes `enclave_*` and
+  provider verbs (`post_*`, …) straight to the enclaved daemon
+  socket, and each product's verbs to that product's own socket,
+  spawning the product process if its socket is dead. Nothing needs
+  to be running beforehand — the chat starts what it needs.
+- **Confirm dialogs are their own process** (`enclave --confirm`),
+  spawned per acting call by the shim; approval is only a human
+  click answered over that child's private pipe — a hijacked agent
+  can never both decide and approve. Read verbs run freely;
+  per-action allowlists are opt-in.
+- **One process per product UI, one socket each**: the product
+  process binds its socket — the bind is the single-instance lock,
+  the `open` op on it is the second-launch handoff, and one slow
+  canvas never stalls another window.
 - **The agent layer ships from here**: one `enclave-mcp` registered
   at install exposes every product's tools over the daemon socket;
   suite skills ("today's summary") live alongside it.

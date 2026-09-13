@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Enclave Post
+GenericName=Mail
+Comment=Mail on your enclave
+Exec=enclave post
+Icon=enclave-post
+Terminal=false
+Categories=Network;Email;
+Keywords=mail;email;post;inbox;
+StartupNotify=true
+StartupWMClass=enclave-post

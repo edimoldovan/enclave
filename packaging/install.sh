@@ -11,8 +11,12 @@ cargo build --release --manifest-path "$repo/Cargo.toml"
 install -Dm755 "$repo/target/release/enclave" "$prefix/bin/enclave"
 install -Dm644 "$repo/packaging/enclave.svg" \
   "$prefix/share/icons/hicolor/scalable/apps/enclave.svg"
+install -Dm644 "$repo/packaging/enclave-post.svg" \
+  "$prefix/share/icons/hicolor/scalable/apps/enclave-post.svg"
 install -Dm644 "$repo/packaging/enclave.desktop" \
   "$prefix/share/applications/enclave.desktop"
+install -Dm644 "$repo/packaging/enclave-post.desktop" \
+  "$prefix/share/applications/enclave-post.desktop"
 install -Dm644 "$repo/crates/grido/keymap.toml" "$HOME/.config/grido/keymap.toml"
 
 if command -v update-desktop-database >/dev/null 2>&1; then

@@ -118,7 +118,22 @@ Suite architecture (settled):
   `enclave`, exposes every product's tools — named
   `<product>_<verb>` (`grido_cell_set`,
   `post_draft`, `chat_send`, …); the spine's own verbs keep the
-  `enclave_` prefix. There are no other MCP servers, ever.
+  `enclave_` prefix. There are no other MCP servers, ever — and no
+  server process either: the shim routes to the daemon and to each
+  product's own socket, starting what it needs on demand.
+- **Config has three levels.** *Application* config is the suite's
+  own — the Google OAuth client every copy signs in with — and lives
+  in git-ignored `config/oauth.json` at the top of the repo, keyed by
+  provider (`{"google":{"client_id":…,"client_secret":…}}`, with
+  Microsoft and the rest as sibling keys later),
+  embedded in the binary at build time; `ENCLAVE_GOOGLE_CLIENT_ID` /
+  `ENCLAVE_GOOGLE_CLIENT_SECRET` override it for a build machine that
+  keeps secrets out of the tree, and one client serves every product.
+  *User* config is `~/.config/enclave/` (`$XDG_CONFIG_HOME/enclave`),
+  never product-scoped: `accounts.json`, `oauth-tokens/<email>.json`
+  (0600, in a 0700 directory), `allowlist.toml`. *Machine state* —
+  everything rebuildable — is `~/.local/share/enclave/`
+  (`$XDG_DATA_HOME/enclave`), where deleting it costs nothing.
 - **Every UI / desktop app is Rust** (egui, as grido already proves
   out). The current Fyne tray moves to Rust with it.
 - **The tray is the launcher.** Every product's manual UI starts from
@@ -130,6 +145,24 @@ Suite architecture (settled):
   Start menu / .desktop) as a launcher stub — "Enclave Post.app" etc.
   — that just opens its window in the one app, so cmd+space finds the
   suite too.
+- **A CLI, off the same palette.** `enclave <verb>` is a third door
+  beside chat and the windows, for people who live in the terminal.
+  One verb registry drives the MCP tool list, the CLI help, and
+  dispatch — parity cannot drift. Every entrypoint normalizes to the
+  same call (`verb, args, origin`) and goes through the one router:
+  free verbs run; acting verbs confirm — the dialog process for
+  chat, a `y/N` prompt on the terminal's own tty for an interactive
+  CLI, the dialog again when there is no tty (scripts, shelled-out
+  agents). One allowlist file serves every door; `--yes` is honored
+  only for allowlisted verbs.
+- **Chat-first, window-optional.** Every product verb is callable from
+  the agent chat and runs headless in the server process when no
+  window is open — reading mail must never force a window. When the
+  product's window is open, the action surfaces in it live: the list
+  updates, the message opens. A product UI starts three ways: the OS
+  launcher stub or a link, the tray, or the chat (each product has an
+  open/show verb). Acting verbs confirm through the dialog process;
+  read verbs never do.
 - **The daemon stays Go, thin.** It is the network (tsnet exists only
   in Go), the local socket, and the headless product modules. A Rust
   rewrite was considered and rejected: tsnet's value is Tailscale's
@@ -160,11 +193,15 @@ Suite architecture (settled):
   only crate that opens the daemon socket: typed API, subscribe
   events, the `version` op — product UIs never see JSON or a socket.
   No product ships its own theme, icons, ribbon, widgets or socket
-  code.
+  code. grido's shipped UI is the design system's source: its look
+  is the suite's look, and every surface — product windows and the
+  small ones like the confirm dialog — is built from enclave-ui
+  widgets, never hand-rolled.
 - **HTML is a component, not a platform.** One sandboxed webview
   (wry) in enclave-ui, used only where HTML is mandatory: Post's
-  email bodies (remote images off by default) and provider OAuth
-  sign-in. Nowhere else. OAuth tokens live in the OS keychain,
+  email bodies (images load; JS never runs). Nowhere else —
+  provider OAuth runs in the system browser with a loopback
+  redirect (Google refuses embedded webviews). OAuth tokens live in the OS keychain,
   through enclave-client.
 - **@-addressing, one scheme everywhere.** Enclave members and their
   computers are addressed as `@person` (their email or the part before
@@ -188,6 +225,16 @@ here — PLAN-enclaved.md, PLAN-post.md, PLAN-almanac.md,
 PLAN-chat.md, PLAN-scribe.md, PLAN-grido.md, PLAN-bursar.md,
 PLAN-depot.md, PLAN-vault.md, PLAN-podium.md, PLAN-mobile.md —
 implementation is then delegated to Opus 5 agents.
+
+Immediate build order per Ed: Post (email), Almanac (calendar), the
+mac↔omarchy share (Depot's simple form + enclaved drops), Bursar
+(accounting); Chat and the editors after.
+
+Docs on the marketing site (`~/dev/go/enclave-server`, enclave.works):
+every product in the package gets both a marketing page and a manual
+there — what it is, and how to actually use it (UI, chat verbs, CLI).
+Not now: this starts once the first app's featureset is stable; from
+then on, shipping a product includes shipping its two pages.
 
 Risks (open, with the current answer):
 

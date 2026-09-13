@@ -7,12 +7,15 @@
 //! ```text
 //! host    {"op":"host","product":"grido"}          a process claims the role
 //! open    {"op":"open","id":3,"path":"/a/b.xlsx"}  put this file on screen
+//! view    {"op":"view","id":5,"account":…,…}       put this mail view on screen
 //! call    {"op":"call","id":4,"tool":…,"args":…}   run a tool in that window
 //! reply   {"op":"reply","id":4,"ok":true,…}        one per request, by id
 //! ```
 //!
 //! `open` with no path means "just come to the front", which is what a second
-//! `enclave` with no arguments asks for.
+//! `enclave` with no arguments asks for. `view` is the same errand for Post,
+//! whose window has no file to name: a second `enclave post list ed@…` sends
+//! one down Post's own socket and exits.
 
 use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
@@ -31,6 +34,13 @@ pub enum Msg {
     Host { product: String },
     /// Show this file (or nothing but the window itself).
     Open { id: Option<u64>, path: Option<PathBuf> },
+    /// Show this mail view: no account is the account list, an account is that
+    /// account's mail, an account and a message is that message.
+    View {
+        id: Option<u64>,
+        account: Option<String>,
+        message: Option<String>,
+    },
     /// Run one tool in the product's window.
     Call { id: u64, tool: String, args: Value },
     /// The answer to one request, matched by id.
@@ -52,6 +62,23 @@ impl Msg {
                 }
                 if let Some(path) = path {
                     v["path"] = json!(path.to_string_lossy());
+                }
+                v
+            }
+            Msg::View {
+                id,
+                account,
+                message,
+            } => {
+                let mut v = json!({"op": "view"});
+                if let Some(id) = id {
+                    v["id"] = json!(id);
+                }
+                if let Some(account) = account {
+                    v["account"] = json!(account);
+                }
+                if let Some(message) = message {
+                    v["message"] = json!(message);
                 }
                 v
             }
@@ -89,6 +116,11 @@ impl Msg {
                     .and_then(Value::as_str)
                     .map(PathBuf::from),
             }),
+            "view" => Some(Msg::View {
+                id,
+                account: text(&value, "account"),
+                message: text(&value, "message"),
+            }),
             "call" => Some(Msg::Call {
                 id: id?,
                 tool: value.get("tool")?.as_str()?.to_string(),
@@ -109,6 +141,16 @@ impl Msg {
             _ => None,
         }
     }
+}
+
+/// One string field of a message, absent when it is empty or not text.
+fn text(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
 }
 
 /// True when a line is app-socket traffic rather than MCP.
@@ -181,20 +223,64 @@ pub fn wait_for_socket(path: &Path, wait: Duration) -> std::io::Result<UnixStrea
 /// Starts `enclave --serve`: the process that owns the socket, the windows'
 /// registry and the confirmation dialog. It has no window of its own.
 pub fn spawn_server() {
-    spawn_self(&["--serve"]);
+    let _ = spawn_self(&["--serve"]);
 }
 
 /// Starts a window process for one product.
 pub fn spawn_product(product: &str) {
-    spawn_self(&["--product", product]);
+    let _ = spawn_self(&["--product", product]);
 }
 
-fn spawn_self(args: &[&str]) {
+/// Starts another copy of this executable under the arguments that ask for a
+/// role — the one way a process with no window of its own puts one on screen.
+/// The arguments are a role, never a shell command line.
+///
+/// What starts here outlives whoever asked for it: a server, or a window
+/// someone will still be reading from tomorrow. So it is detached — no stdio,
+/// and a session of its own, which is what keeps the terminal's hangup from
+/// taking the window down with it when the terminal closes.
+pub fn spawn_self<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> std::io::Result<()> {
+    spawn_self_named(None, args)
+}
+
+/// The same, under a name the new process calls itself by. That name is
+/// `argv[0]`, which on X11 is the window's WM_CLASS — so it is what a desktop
+/// entry's `StartupWMClass` has to match for the launcher to group the window
+/// under the right icon. `None` keeps the executable's own name.
+pub fn spawn_self_named<S: AsRef<std::ffi::OsStr>>(
+    name: Option<&str>,
+    args: &[S],
+) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("enclave"));
-    let _ = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    if let Some(name) = name {
+        command.arg0(name);
+    }
+    command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    // SAFETY: between fork and exec only async-signal-safe calls are allowed.
+    // setsid() is one syscall and nothing else runs here.
+    unsafe {
+        command.pre_exec(|| {
+            new_session();
+            Ok(())
+        })
+    };
+    command.spawn().map(|_| ())
+}
+
+/// Leaves the caller's session and terminal behind. Failing means this process
+/// already leads a session, which is the same place we wanted to be.
+///
+/// One libc call, not worth a dependency.
+fn new_session() {
+    unsafe extern "C" {
+        fn setsid() -> i32;
+    }
+    unsafe { setsid() };
 }

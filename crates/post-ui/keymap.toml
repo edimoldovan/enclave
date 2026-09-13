@@ -1,0 +1,42 @@
+# Post key bindings.
+#
+# Format:  "Chord" = "command_id"
+# Chords are Modifier+Key, e.g. "Ctrl+R". Modifiers: Ctrl, Shift, Alt.
+# Key names: A-Z, 0-9, ArrowUp/ArrowDown/ArrowLeft/ArrowRight, Home, End,
+# PageUp, PageDown, Delete, Backspace, Enter, Tab, Escape, Space, "/"...
+#
+# One scheme: bare keys move around the views, Ctrl+<letter> does something.
+# No function keys (F1 stays only as the old hand's alias for the viewer).
+#
+# Post looks for this file in: $POST_KEYMAP, ./keymap.toml,
+# ~/.config/post/keymap.toml — first hit wins. Edit and restart.
+# The full command list is in src/commands.rs (Command::from_id);
+# press Ctrl+/ to see everything currently bound.
+
+[bindings]
+# --- Moving around: bare keys ---
+"ArrowDown" = "next"
+"ArrowUp" = "previous"
+"PageDown" = "page_next"
+"PageUp" = "page_previous"
+"End" = "last"
+"Home" = "accounts"
+"Enter" = "open"
+"ArrowRight" = "open"
+"ArrowLeft" = "back"
+"Backspace" = "back"
+"Escape" = "back"
+"Delete" = "delete"
+
+# --- Doing something: Ctrl+<letter> ---
+"Ctrl+R" = "refresh"
+"Ctrl+U" = "mark_unread"
+"Ctrl+N" = "add_account"
+"Ctrl+W" = "quit"
+
+# --- Help ---
+"Ctrl+/" = "shortcut_help"
+# On layouts where "/" is a shifted key (Swedish: Shift+7), the same press
+# arrives with Shift on it.
+"Ctrl+Shift+/" = "shortcut_help"
+"F1" = "shortcut_help"

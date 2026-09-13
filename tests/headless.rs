@@ -177,7 +177,7 @@ fn the_server_serves_with_no_display() {
     let reply = talk.reply();
     assert_eq!(
         reply["result"]["tools"].as_array().expect("tools").len(),
-        23,
+        31,
         "the whole surface, served without a screen"
     );
 

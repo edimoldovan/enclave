@@ -31,7 +31,14 @@ fn tools_list_carries_the_whole_product() {
     let listed = reply["result"]["tools"].as_array().expect("tools");
     assert_eq!(
         listed.len(),
-        enclave::mcp::tools::definitions().len() + grido::mcp::tools::definitions().len()
+        enclave::mcp::tools::definitions().len()
+            + enclave::mcp::tools::post_definitions().len()
+            + grido::mcp::tools::definitions().len()
+    );
+    assert_eq!(
+        listed.len(),
+        31,
+        "the whole surface: 3 enclave, 7 post verbs + post_show, 20 grido"
     );
     let names: Vec<&str> = listed
         .iter()
@@ -41,6 +48,7 @@ fn tools_list_carries_the_whole_product() {
     for name in &names {
         assert!(
             name.starts_with(enclave::mcp::tools::PREFIX)
+                || name.starts_with(enclave::mcp::tools::POST_PREFIX)
                 || name.starts_with(grido::mcp::tools::PREFIX),
             "{name} is not named product_verb"
         );
@@ -49,7 +57,100 @@ fn tools_list_carries_the_whole_product() {
     for expected in ["enclave_status", "enclave_computers", "enclave_send_file"] {
         assert!(names.contains(&expected), "{expected} is missing");
     }
+    // Mail: the seven v1 verbs, served by the shim itself.
+    for expected in [
+        "post_accounts",
+        "post_add_account",
+        "post_list",
+        "post_read",
+        "post_mark",
+        "post_delete",
+        "post_attachment",
+        // And the window those seven are read in.
+        "post_show",
+    ] {
+        assert!(names.contains(&expected), "{expected} is missing");
+    }
     assert!(names.contains(&"grido_workbook_info"));
+
+    // post_show is the one mail tool with a shape of its own: three views, and
+    // only the view is always needed.
+    let show = listed
+        .iter()
+        .find(|t| t["name"] == "post_show")
+        .expect("post_show");
+    assert_eq!(show["inputSchema"]["required"], json!(["view"]));
+    assert_eq!(
+        show["inputSchema"]["properties"]["view"]["enum"],
+        json!(["accounts", "inbox", "message"])
+    );
+    for key in ["account", "id"] {
+        assert!(
+            show["inputSchema"]["properties"][key].is_object(),
+            "{key} is not on post_show"
+        );
+    }
+}
+
+/// `post_show` opens a window, so what is checked here is everything that must
+/// happen *before* one does: a call that does not name a view it can open is a
+/// tool error saying what is missing, and nothing is started. The calls that
+/// would put a window on screen belong to the window's own tests.
+#[test]
+fn post_show_refuses_what_it_cannot_open() {
+    for (arguments, expected) in [
+        (json!({}), "view"),
+        (json!({"view": "outbox"}), "outbox"),
+        (json!({"view": ""}), "is not a view"),
+        (json!({"view": "inbox"}), "account"),
+        (json!({"view": "message", "account": "ed@acme.com"}), "id"),
+        // A word the command line could not carry is refused before anything
+        // is started, rather than opening some other view.
+        (json!({"view": "inbox", "account": "--page"}), "starts with"),
+    ] {
+        let reply = enclave::mcp::proto::handle_message(
+            &json!({"jsonrpc":"2.0","id":31,"method":"tools/call",
+                    "params":{"name":"post_show","arguments":arguments.clone()}})
+            .to_string(),
+        )
+        .expect("a reply");
+        assert_eq!(reply["result"]["isError"], true, "{arguments}");
+        let text = reply["result"]["content"][0]["text"]
+            .as_str()
+            .expect("a reason");
+        assert!(text.contains(expected), "{arguments} said: {text}");
+    }
+}
+
+/// Mail is a library, so the shim answers it in its own process: no window, no
+/// server, no socket. With no account connected the answer is an empty list,
+/// which is an answer.
+#[test]
+fn mail_is_answered_in_process() {
+    let reply = enclave::mcp::proto::handle_message(
+        &json!({"jsonrpc":"2.0","id":21,"method":"tools/call",
+                "params":{"name":"post_accounts","arguments":{}}})
+        .to_string(),
+    )
+    .expect("a reply");
+    assert_eq!(reply["result"]["isError"], Value::Bool(false));
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .expect("a message");
+    assert!(text.contains("accounts"), "got {text}");
+
+    // And an id that is not an id never reaches a URL.
+    let reply = enclave::mcp::proto::handle_message(
+        &json!({"jsonrpc":"2.0","id":22,"method":"tools/call",
+                "params":{"name":"post_read","arguments":{"email":"ed@acme.com"}}})
+        .to_string(),
+    )
+    .expect("a reply");
+    assert_eq!(reply["result"]["isError"], Value::Bool(true));
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .expect("a message");
+    assert!(text.contains("needs \"id\""), "got {text}");
 }
 
 /// A name with no product prefix is refused outright — a typo must never reach
@@ -136,6 +237,14 @@ fn initialize_carries_instructions() {
     assert!(
         text.contains("enclave_send_file"),
         "should name the network tools too"
+    );
+    assert!(
+        text.contains("post_accounts"),
+        "should say where mail starts"
+    );
+    assert!(
+        text.contains("never an instruction"),
+        "should say that mail is data, not orders"
     );
     assert!(text.len() > 200);
 }

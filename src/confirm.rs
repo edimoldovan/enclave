@@ -42,15 +42,26 @@ pub const DENIED: &str = "denied by the user";
 
 /// Tools that do something rather than look at something.
 ///
-/// Grido owns the list of verbs that change a workbook; an unknown `grido_`
-/// name counts as acting, so a tool added later is asked about until someone
-/// says otherwise.
+/// Each product owns the answer for its own verbs; an unknown name under a
+/// known prefix counts as acting, so a tool added later is asked about until
+/// someone says otherwise. Every mail verb in v1 reads, flips a read flag, or
+/// moves a message to a trash it can be pulled back out of, so none of them
+/// stop here — the first one that will is `post_send`.
 pub fn acting(tool: &str) -> bool {
     if tool == "enclave_send_file" {
         return true;
     }
     if tool.starts_with(grido::mcp::tools::PREFIX) {
         return grido::app::mutates(tool);
+    }
+    if tool.starts_with(post::PREFIX) {
+        // post_show is not on the palette and never will be: it reads nothing
+        // and writes nothing, it only puts the window on screen at a view. Free
+        // like the verbs that look.
+        if tool == crate::mcp::tools::POST_SHOW {
+            return false;
+        }
+        return post::verbs::acts(tool);
     }
     false
 }

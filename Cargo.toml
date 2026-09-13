@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/enclave-ui", "crates/enclave-client", "crates/grido"]
+members = [
+    "crates/enclave-ui",
+    "crates/enclave-client",
+    "crates/grido",
+    "crates/post",
+    "crates/post-ui",
+]
 
 [package]
 name = "enclave"
@@ -15,5 +21,12 @@ eframe = "0.33.3"
 enclave-client = { path = "crates/enclave-client" }
 enclave-ui = { path = "crates/enclave-ui" }
 grido = { path = "crates/grido" }
+post = { path = "crates/post" }
+post-ui = { path = "crates/post-ui" }
+raw-window-handle = "0.6.2"
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 toml = "1.1.4"
+winit = "0.30.13"
+
+[dev-dependencies]
+x11-dl = "2.21.0"
