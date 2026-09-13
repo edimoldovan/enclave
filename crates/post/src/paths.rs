@@ -88,6 +88,14 @@ pub fn bodies_dir() -> PathBuf {
     state_dir().join("postbodies")
 }
 
+/// One fetched body. The address is a directory name here and the id a
+/// filename, so nothing in either may be a path.
+pub fn body_file(email: &str, id: &str) -> PathBuf {
+    bodies_dir()
+        .join(safe(email))
+        .join(format!("{}.html", safe(id)))
+}
+
 /// The newest fetched page of each mailbox, one file per account. Rebuildable
 /// like the bodies: it is a head start, never the truth.
 pub fn list_cache_dir() -> PathBuf {
@@ -115,15 +123,56 @@ pub fn read_cache_file(email: &str, id: &str) -> PathBuf {
 }
 
 /// A name as a filename: nothing in it is allowed to be a path.
-fn safe(name: &str) -> String {
-    name.chars()
+///
+/// A separator is neutralised, and so is a name that is a directory rather
+/// than a name — `.` and `..` are steps through the tree, not addresses — and
+/// nothing ever comes back empty. An ordinary address is itself, byte for
+/// byte, dots and all.
+pub(crate) fn safe(name: &str) -> String {
+    let name: String = name
+        .chars()
         .map(|c| if c == '/' || c == '\\' { '_' } else { c })
-        .collect()
+        .collect();
+    if name.is_empty() {
+        return "_".to_string();
+    }
+    // `.`, `..`, and anything else that is nothing but dots.
+    if name.chars().all(|c| c == '.') {
+        return "_".repeat(name.len());
+    }
+    name
 }
 
 /// Where a saved attachment lands.
 pub fn attachments_dir() -> PathBuf {
     home().join("Enclaved").join("Attachments")
+}
+
+/// Runs `work` with the state dir pointed at a scratch directory of this test
+/// run's own, and hands it that directory.
+///
+/// The state dir comes out of the environment, and the environment belongs to
+/// the process rather than to one test. So it is set once, always to the same
+/// path, and every test that reads or writes under the state dir goes through
+/// here: nothing reads the variable while it is being written.
+#[cfg(test)]
+pub(crate) fn with_state_dir<T>(work: impl FnOnce(&Path) -> T) -> T {
+    use std::sync::{Mutex, OnceLock};
+
+    static SCRATCH: OnceLock<Mutex<PathBuf>> = OnceLock::new();
+    let scratch = SCRATCH.get_or_init(|| {
+        Mutex::new(
+            std::env::temp_dir()
+                .join("post-state-tests")
+                .join(std::process::id().to_string()),
+        )
+    });
+    // A test that panicked left the lock poisoned, not the directory wrong.
+    let home = scratch.lock().unwrap_or_else(|held| held.into_inner());
+    // SAFETY: the only write of this variable in this process, under the lock
+    // that every read of it is also taken under.
+    unsafe { std::env::set_var("XDG_DATA_HOME", &*home) };
+    work(&state_dir())
 }
 
 #[cfg(test)]
@@ -212,6 +261,143 @@ mod tests {
             Some(0o600)
         );
         assert_eq!(store::mode(&dir), Some(0o700));
+    }
+
+    /// An address is a filename in the caches, and a filename is not a path: a
+    /// separator in one is neutralised, so the cache file for an address out of
+    /// a model or a shell still lands in the directory it belongs to.
+    #[test]
+    fn an_address_is_a_filename_and_never_a_path() {
+        with_state_dir(|state| {
+            // One account's page is one file, named after the address.
+            let page = list_cache_file("ed/../root@acme.com");
+            assert_eq!(page.parent(), Some(state.join("postlist").as_path()));
+            assert_eq!(
+                page.file_name().and_then(|n| n.to_str()),
+                Some("ed_.._root@acme.com.json")
+            );
+
+            // A Windows-shaped path is not a path here either.
+            let back = list_cache_file(r"ed\..\root@acme.com");
+            assert_eq!(back.parent(), Some(state.join("postlist").as_path()));
+            assert_eq!(
+                back.file_name().and_then(|n| n.to_str()),
+                Some("ed_.._root@acme.com.json")
+            );
+
+            // A cached message is two names — the address and the id — and
+            // both of them are filenames.
+            assert_eq!(
+                read_cache_file("ed/x@acme.com", "18f3a2c9b1"),
+                state
+                    .join("postread")
+                    .join("ed_x@acme.com")
+                    .join("18f3a2c9b1.json")
+            );
+
+            // A body is filed under the address too, and that is a directory
+            // name: an absolute address does not take the base dir with it.
+            assert_eq!(
+                body_file("ed@acme.com", "18f3a2c9b1"),
+                state
+                    .join("postbodies")
+                    .join("ed@acme.com")
+                    .join("18f3a2c9b1.html")
+            );
+        });
+    }
+
+    /// An address out of a model or a shell is never a way out of the state
+    /// dir: an absolute one does not discard the directory it is joined to,
+    /// and `..` does not step up out of it.
+    #[test]
+    fn an_address_can_never_walk_out_of_the_state_dir() {
+        with_state_dir(|state| {
+            // Inside means two things: under the directory, and with no step
+            // back out of it left in the path to walk.
+            fn inside(file: &Path, dir: PathBuf, hostile: &str) {
+                use std::path::Component;
+                assert!(
+                    file.starts_with(&dir),
+                    "\"{hostile}\" landed at {}",
+                    file.display()
+                );
+                assert!(
+                    !file
+                        .strip_prefix(&dir)
+                        .expect("under the directory")
+                        .components()
+                        .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+                    "\"{hostile}\" kept a step back out: {}",
+                    file.display()
+                );
+            }
+
+            let escapes = ["/etc", "/etc/passwd", "..", "../..", "../../../etc", "."];
+            for hostile in escapes {
+                inside(&list_cache_file(hostile), state.join("postlist"), hostile);
+                inside(
+                    &read_cache_file(hostile, "18f3a2c9b1"),
+                    state.join("postread"),
+                    hostile,
+                );
+                inside(
+                    &body_file(hostile, "18f3a2c9b1"),
+                    state.join("postbodies"),
+                    hostile,
+                );
+            }
+
+            // Named exactly: `/etc` is a name, and `..` is two underscores.
+            assert_eq!(
+                body_file("/etc", "18f3a2c9b1"),
+                state
+                    .join("postbodies")
+                    .join("_etc")
+                    .join("18f3a2c9b1.html")
+            );
+            assert_eq!(
+                read_cache_file("..", "18f3a2c9b1"),
+                state.join("postread").join("__").join("18f3a2c9b1.json")
+            );
+        });
+    }
+
+    /// What a filename is allowed to carry: everything but a separator.
+    #[test]
+    fn a_separator_is_the_one_thing_a_name_may_not_keep() {
+        for hostile in ["a/b", r"a\b", "//", r"\\", "/etc/passwd", "ed@acme.com"] {
+            let name = safe(hostile);
+            assert!(!name.contains('/'), "{hostile} kept a slash: {name}");
+            assert!(!name.contains('\\'), "{hostile} kept a backslash: {name}");
+            assert_eq!(name.chars().count(), hostile.chars().count());
+        }
+        assert_eq!(safe("ed@acme.com"), "ed@acme.com", "an ordinary address is itself");
+    }
+
+    /// The other thing a name may not be: a directory. `.` and `..` are steps
+    /// through the tree rather than names, so neither survives as one — and
+    /// nothing ever comes back empty, which is no filename at all.
+    #[test]
+    fn a_dot_directory_is_not_a_name_either() {
+        use std::path::Component;
+
+        for hostile in ["", ".", "..", "...", "/..", "../..", r"..\..", "/"] {
+            let name = safe(hostile);
+            assert!(!name.is_empty(), "\"{hostile}\" became nothing");
+            assert!(
+                !Path::new(&name)
+                    .components()
+                    .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+                "\"{hostile}\" kept a step through the tree: {name}"
+            );
+        }
+        assert_eq!(safe("."), "_");
+        assert_eq!(safe(".."), "__");
+
+        // And the dots an ordinary address is full of are kept, every one.
+        assert_eq!(safe("ed.moldovan@acme.co.uk"), "ed.moldovan@acme.co.uk");
+        assert_eq!(safe(".hidden@acme.com"), ".hidden@acme.com");
     }
 
     /// The oldest shape of all: a directory named before it said what kind of

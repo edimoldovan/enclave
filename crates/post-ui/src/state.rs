@@ -372,12 +372,60 @@ mod tests {
         }
     }
 
+    /// A page of `ids`, and where the mailbox continues after it.
+    fn paged(ids: &[&str], next: Option<&str>) -> Mailbox {
+        let messages: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                json!({"id": id, "from": "Ale <ale@acme.com>", "subject": "Re: the quote",
+                       "date": "2025-09-12 10:33", "unread": true})
+            })
+            .collect();
+        Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"account": "ed@acme.com", "messages": messages, "next_page": next}),
+        )
+    }
+
     fn inbox() -> PostApp {
         let mut app = PostApp::new(View::Inbox {
             account: "ed@acme.com".to_string(),
         });
         app.absorb(Done::List(listing()));
         app
+    }
+
+    /// A chord as the keymap spells it.
+    fn chord(text: &str) -> eframe::egui::KeyboardShortcut {
+        enclave_ui::keymap::parse_chord(text).expect("a chord")
+    }
+
+    /// A keymap built for one test: chord and command, as a `keymap.toml` line
+    /// would name them.
+    fn keymap_of(bindings: &[(&str, Command)]) -> Keymap {
+        Keymap {
+            bindings: bindings.iter().map(|(key, cmd)| (chord(key), *cmd)).collect(),
+            source: "a test".to_string(),
+        }
+    }
+
+    /// The keymap Post ships with, out of its own compiled-in file — the same
+    /// bindings the loader would find, with no file on this computer involved.
+    fn shipped_keymap() -> Keymap {
+        let bindings = crate::keymap::DEFAULT_KEYMAP
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| line.split_once('='))
+            .filter_map(|(key, id)| {
+                let key = enclave_ui::keymap::parse_chord(key.trim().trim_matches('"'))?;
+                Some((key, Command::from_id(id.trim().trim_matches('"'))?))
+            })
+            .collect();
+        Keymap {
+            bindings,
+            source: "built-in".to_string(),
+        }
     }
 
     /// A row tapped, and the answer back: the whole of opening a message.
@@ -569,6 +617,180 @@ mod tests {
         let line = first_warning(&many);
         assert_eq!(line, "warning 0 (and 39 more)");
         assert!(!line.contains("warning 7"));
+    }
+
+    /// A window opened straight at a message — `enclave post read ed@… 18f3` —
+    /// has nothing behind it: that view is the floor, so Back does nothing and
+    /// the message it opened at stays open.
+    #[test]
+    fn a_window_opened_at_a_message_has_nothing_behind_it() {
+        let detail = View::Detail {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+        };
+        let mut app = PostApp::new(detail.clone());
+        assert_eq!(app.nav.depth(), 1);
+        app.absorb(Done::Read(message("18f3")));
+        assert_eq!(app.message.as_ref().expect("a message").id, "18f3");
+
+        app.back();
+        assert_eq!(app.nav.top(), &detail, "there was nowhere to go");
+        assert!(app.message.is_some(), "and nothing was dropped on the way");
+    }
+
+    // --------------------------------------------------------------- paging
+
+    /// The page after the one on screen is asked for once: while it is on the
+    /// wire the list asks for nothing more, and at the end of a mailbox — or
+    /// with no mailbox at all — there is nothing to ask for.
+    #[test]
+    fn a_page_is_asked_for_once_and_only_where_there_is_one() {
+        let mut app = inbox();
+        app.absorb(Done::List(paged(&["18f3", "18f2"], Some("tok3n"))));
+
+        app.load_more();
+        assert!(app.paging, "a page is on its way");
+        assert_eq!(
+            app.status,
+            Job::List {
+                account: "ed@acme.com".to_string(),
+                page: Some("tok3n".to_string()),
+            }
+            .about()
+        );
+
+        // A second ask while that one is in flight starts nothing: the status
+        // a started job sets is not set again.
+        app.set_status("");
+        app.load_more();
+        assert_eq!(app.status, "", "nothing was started");
+        assert!(app.paging);
+    }
+
+    /// The end of a mailbox has no token, so there is no page to ask for — and
+    /// asking leaves the list where it is rather than waiting forever.
+    #[test]
+    fn there_is_nothing_to_page_at_the_end_of_a_mailbox() {
+        let mut app = inbox();
+        assert_eq!(app.mailbox.as_ref().expect("a page").next_page, None);
+        app.set_status("");
+        app.load_more();
+        assert!(!app.paging);
+        assert_eq!(app.status, "");
+
+        // And a window with nothing loaded yet has nothing to page either.
+        let mut app = PostApp::new(View::Inbox {
+            account: "ed@acme.com".to_string(),
+        });
+        app.set_status("");
+        app.load_more();
+        assert!(!app.paging);
+        assert_eq!(app.status, "");
+    }
+
+    /// The page that comes back goes on the end, and the reader's place in the
+    /// list does not move: rows only ever arrive below them. A row that is
+    /// somehow in both pages — the boundary shifted under a mailbox that took
+    /// a new message meanwhile — is in the list once.
+    #[test]
+    fn the_page_after_goes_on_the_end_and_the_selection_stays() {
+        let mut app = inbox();
+        app.absorb(Done::List(paged(&["18f3", "18f2"], Some("tok3n"))));
+        app.focus = 1;
+        app.paging = true;
+        app.set_status("Fetching more…");
+
+        app.absorb(Done::More(paged(&["18f2", "18f1", "18f0"], None)));
+
+        let ids: Vec<&str> = app.rows().iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, vec!["18f3", "18f2", "18f1", "18f0"], "and nothing twice");
+        assert_eq!(app.focus, 1, "the reader stayed where they were");
+        assert!(!app.follow_focus, "so there is nothing to scroll to");
+        assert!(!app.paging, "and the list may ask again");
+        assert_eq!(app.status, "");
+        assert_eq!(
+            app.mailbox.as_ref().expect("a page").next_page,
+            None,
+            "that was the last page"
+        );
+    }
+
+    /// A page belongs to the mailbox that asked for it, and to no other: a
+    /// reader who changed account while it was on the wire is left alone.
+    #[test]
+    fn a_page_for_another_mailbox_is_not_appended() {
+        let mut app = inbox();
+        app.paging = true;
+        let mut elsewhere = paged(&["aaa", "bbb"], None);
+        elsewhere.account = "ale@acme.com".to_string();
+
+        app.absorb(Done::More(elsewhere));
+        assert_eq!(app.rows().len(), 2, "this mailbox is as it was");
+        assert!(app.mailbox.as_ref().expect("a page").row("aaa").is_none());
+        assert!(!app.paging, "and the list is not left waiting");
+    }
+
+    /// A page that failed takes the line off the end of the list — the reader
+    /// can ask again, rather than watching it wait forever.
+    #[test]
+    fn a_page_that_failed_stops_the_paging() {
+        let mut app = inbox();
+        app.paging = true;
+        app.absorb(Done::Failed {
+            about: "Fetching more…".to_string(),
+            error: "Gmail refused the call (429)".to_string(),
+        });
+        assert!(!app.paging);
+        assert!(app.status.contains("429"), "got {}", app.status);
+    }
+
+    // ------------------------------------------------------- the pane's keys
+
+    /// The body pane hands the window back the chords bound to leaving a
+    /// message and to trashing it, and keeps every other key for WebKit — which
+    /// is what leaves the arrows and the page keys scrolling the body.
+    #[test]
+    fn the_pane_hands_back_exactly_the_keys_bound_to_back_and_delete() {
+        let keymap = keymap_of(&[
+            ("Escape", Command::Back),
+            ("ArrowLeft", Command::Back),
+            ("ArrowDown", Command::Next),
+            ("PageDown", Command::PageNext),
+            ("Delete", Command::Delete),
+            ("Ctrl+R", Command::Refresh),
+            ("Ctrl+U", Command::MarkUnread),
+        ]);
+        assert_eq!(
+            pane_keys(&keymap),
+            vec![chord("Escape"), chord("ArrowLeft"), chord("Delete")]
+        );
+
+        // The reader's own file is the list: rebind them and the pane follows,
+        // with no second list of keys anywhere to fall out of step.
+        let rebound = keymap_of(&[
+            ("Ctrl+B", Command::Back),
+            ("Escape", Command::Quit),
+            ("Ctrl+K", Command::Delete),
+            ("ArrowLeft", Command::Previous),
+        ]);
+        assert_eq!(pane_keys(&rebound), vec![chord("Ctrl+B"), chord("Ctrl+K")]);
+
+        // A keymap that binds neither takes nothing from WebKit at all.
+        assert!(pane_keys(&keymap_of(&[("ArrowDown", Command::Next)])).is_empty());
+    }
+
+    /// And the keymap Post ships with: the three ways out of a message and the
+    /// one that trashes it, and nothing else taken from the page.
+    #[test]
+    fn the_shipped_keymap_gives_the_pane_back_the_keys_it_needs() {
+        let keys = pane_keys(&shipped_keymap());
+        for claimed in ["Escape", "Backspace", "ArrowLeft", "Delete"] {
+            assert!(keys.contains(&chord(claimed)), "{claimed} is not handed back");
+        }
+        assert_eq!(keys.len(), 4, "and nothing else is taken from WebKit");
+        for webkits in ["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", "Ctrl+R"] {
+            assert!(!keys.contains(&chord(webkits)), "{webkits} is WebKit's");
+        }
     }
 
     /// With no accounts the window still has something to say.

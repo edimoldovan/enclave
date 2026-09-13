@@ -133,6 +133,7 @@ impl CommandId for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::KeyboardShortcut;
 
     /// Every command is reachable by its id, and every id round-trips — a
     /// keymap can name all of them and nothing is bound to a ghost.
@@ -195,5 +196,59 @@ mod tests {
         // replace them.
         assert!(bound.contains(&("Escape", "back")));
         assert!(bound.contains(&("Backspace", "back")));
+    }
+
+    /// Whether a chord's key is a function key — F1, Ctrl+F5 — as opposed to a
+    /// letter that merely starts with an F.
+    fn function_key(chord: &str) -> bool {
+        chord.rsplit('+').next().is_some_and(|key| {
+            key.len() >= 2
+                && key.starts_with('F')
+                && key[1..].chars().all(|c| c.is_ascii_digit())
+        })
+    }
+
+    /// No command is reachable only by a function key. F1 is the old hand's
+    /// alias for the shortcut viewer, and an alias is a second way to a
+    /// command, never the only one — a keyboard without a function row still
+    /// drives the whole window.
+    #[test]
+    fn no_command_is_reachable_only_by_a_function_key() {
+        assert!(function_key("F1") && function_key("Ctrl+F5"));
+        assert!(!function_key("Escape") && !function_key("Ctrl+F") && !function_key("F"));
+
+        let bound = shipped();
+        for (chord, id) in &bound {
+            if !function_key(chord) {
+                continue;
+            }
+            assert!(
+                bound
+                    .iter()
+                    .any(|(other, also)| also == id && !function_key(other)),
+                "\"{id}\" is only reachable by {chord}"
+            );
+        }
+    }
+
+    /// One chord means one thing. Two commands on the same key press would both
+    /// run, in whatever order the file happened to list them — and the chords
+    /// are compared as egui matches them, so two spellings of the same press
+    /// are the same press.
+    #[test]
+    fn no_chord_means_two_things() {
+        let mut seen: Vec<(KeyboardShortcut, &str, &str)> = Vec::new();
+        for (chord, id) in shipped() {
+            let pressed = enclave_ui::keymap::parse_chord(chord)
+                .unwrap_or_else(|| panic!("\"{chord}\" is not a chord egui can match"));
+            if let Some((_, spelt, already)) = seen.iter().find(|(key, ..)| *key == pressed) {
+                assert_eq!(
+                    *already, id,
+                    "{chord} and {spelt} are the same key press, bound to two commands"
+                );
+            }
+            seen.push((pressed, chord, id));
+        }
+        assert!(seen.len() > 10, "the keymap binds the window, not a token key");
     }
 }

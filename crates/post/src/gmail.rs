@@ -223,7 +223,7 @@ pub fn read(email: &str, id: &str) -> Result<Value, String> {
 
     let html_path = match &body.html {
         Some(html) => {
-            let file = paths::bodies_dir().join(email).join(format!("{id}.html"));
+            let file = paths::body_file(email, id);
             match store::create(&file) {
                 Ok(mut out) => {
                     use std::io::Write;
@@ -648,9 +648,17 @@ fn cached_message(email: &str, id: &str) -> Option<Value> {
     Some(message)
 }
 
-/// Keeps the message just fetched. A body that could not be saved is not a
-/// failed read: the next open simply fetches it again.
+/// Keeps the message just fetched, once it is marked read — and only then. A
+/// read whose mark did not go through is not the message's final shape: cached,
+/// it would say `marked_read: false` forever, because nothing after a cache hit
+/// ever calls Gmail again. It is not kept, so the next open marks it.
+///
+/// A body that could not be saved is not a failed read either way: the next
+/// open simply fetches it again.
 fn save_message(email: &str, id: &str, answer: &Value) {
+    if answer.get("marked_read").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
     if let Ok(mut out) = store::create(&paths::read_cache_file(email, id)) {
         use std::io::Write;
         let _ = out.write_all(answer.to_string().as_bytes());
@@ -797,6 +805,391 @@ mod tests {
             let e = checked_id(bad).expect_err("not an id");
             assert!(e.contains("not a message id"), "got {e}");
         }
+    }
+
+    // ------------------------------------------------------- the batch call
+
+    /// A multipart answer in the shape Gmail sends one: its own boundary, one
+    /// part per inner call, and each part carrying its own status line and
+    /// headers above the JSON.
+    fn batch_answer(boundary: &str, parts: &[(u16, &str)]) -> String {
+        let mut text = String::new();
+        for (code, body) in parts {
+            let said = if *code == 200 { "OK" } else { "Unauthorized" };
+            text.push_str(&format!(
+                "--{boundary}\r\n\
+                 Content-Type: application/http\r\n\
+                 Content-ID: response-\r\n\r\n\
+                 HTTP/1.1 {code} {said}\r\n\
+                 Content-Type: application/json; charset=UTF-8\r\n\r\n\
+                 {body}\r\n\r\n"
+            ));
+        }
+        text.push_str(&format!("--{boundary}--\r\n"));
+        text
+    }
+
+    /// One call up, N answers down: the batch answer is the JSON out of its
+    /// parts, in the order Gmail wrote them.
+    #[test]
+    fn a_batch_answer_is_the_json_in_its_parts() {
+        let body = batch_answer(
+            "batch_abc123",
+            &[
+                (200, r#"{"id":"18f3","labelIds":["UNREAD","INBOX"]}"#),
+                (200, r#"{"id":"18f2","labelIds":["INBOX"]}"#),
+                (200, r#"{"id":"18f1","labelIds":[]}"#),
+            ],
+        );
+        let parsed = match unbatch("multipart/mixed; boundary=batch_abc123", &body) {
+            Ok(parsed) => parsed,
+            Err(e) => panic!("{}", e.message()),
+        };
+        let ids: Vec<&str> = parsed
+            .iter()
+            .map(|m| m.get("id").and_then(Value::as_str).expect("an id"))
+            .collect();
+        assert_eq!(ids, vec!["18f3", "18f2", "18f1"]);
+        // Whole objects, not text: the labels are there to read.
+        assert_eq!(parsed[0]["labelIds"][0], "UNREAD");
+        assert_eq!(summary(&parsed[0])["unread"], true);
+        assert_eq!(summary(&parsed[1])["unread"], false);
+    }
+
+    /// Where one part ends: the boundary Gmail declared in its header, and —
+    /// when it declared none — the first line of the body, which is that same
+    /// boundary written out.
+    #[test]
+    fn the_boundary_is_gmails_own_and_the_first_line_stands_in_for_it() {
+        assert_eq!(
+            boundary_of("multipart/mixed; boundary=batch_abc").as_deref(),
+            Some("batch_abc")
+        );
+        assert_eq!(
+            boundary_of("multipart/mixed; BOUNDARY=\"batch_abc\"; charset=utf-8").as_deref(),
+            Some("batch_abc")
+        );
+        assert_eq!(boundary_of("application/json"), None);
+        assert_eq!(boundary_of("multipart/mixed; boundary="), None);
+
+        let body = batch_answer("batch_xyz", &[(200, r#"{"id":"18f3"}"#)]);
+        assert_eq!(
+            separator("multipart/mixed; boundary=batch_xyz", &body).as_deref(),
+            Some("--batch_xyz")
+        );
+        assert_eq!(
+            separator("multipart/mixed", &body).as_deref(),
+            Some("--batch_xyz"),
+            "the body says it too"
+        );
+        assert_eq!(separator("multipart/mixed", "{\"id\":\"18f3\"}"), None);
+
+        // And with neither, the page is not a page: say so rather than hand
+        // back an empty listing that looks like an empty mailbox.
+        let e = match unbatch("application/json", "{\"id\":\"18f3\"}") {
+            Err(e) => e.message(),
+            Ok(parsed) => panic!("a shapeless answer became {parsed:?}"),
+        };
+        assert!(e.contains("where one part ends"), "got {e}");
+    }
+
+    /// The token is what every part used, so one part refusing it is the whole
+    /// call refusing it — which is the one thing worth a fresh token and a
+    /// second try.
+    #[test]
+    fn one_part_refusing_the_token_refuses_the_whole_call() {
+        let refused_one = batch_answer(
+            "batch_abc",
+            &[
+                (200, r#"{"id":"18f3"}"#),
+                (401, r#"{"error":{"code":401,"message":"Invalid Credentials"}}"#),
+            ],
+        );
+        assert!(matches!(
+            unbatch("multipart/mixed; boundary=batch_abc", &refused_one),
+            Err(Failure::Unauthorized)
+        ));
+
+        // Every part answered: nothing to retry, and the page is the page.
+        let answered = batch_answer(
+            "batch_abc",
+            &[(200, r#"{"id":"18f3"}"#), (200, r#"{"id":"18f2"}"#)],
+        );
+        assert!(matches!(
+            unbatch("multipart/mixed; boundary=batch_abc", &answered),
+            Ok(parsed) if parsed.len() == 2
+        ));
+    }
+
+    /// A refusal is a part's own status line and nothing else. A message that
+    /// merely says the number is a message, not a refused token.
+    #[test]
+    fn only_an_inner_status_line_is_a_refusal() {
+        assert!(refused("HTTP/1.1 401 Unauthorized\r\n\r\n{}"));
+        assert!(!refused("HTTP/1.1 200 OK\r\n\r\n{\"id\":\"18f3\"}"));
+        assert!(
+            !refused("HTTP/1.1 200 OK\r\n\r\n{\"subject\":\"invoice 401 is due\"}"),
+            "a subject line is not a status line"
+        );
+        assert!(!refused("HTTP/1.1 404 Not Found\r\n\r\n{}"));
+        assert!(!refused(""));
+    }
+
+    /// One part is the first object in it: past the part's own headers, and
+    /// past the inner response's. What follows the object is the next
+    /// boundary's business.
+    #[test]
+    fn a_part_is_the_first_object_in_it_and_nothing_after() {
+        let part = "\r\nContent-Type: application/http\r\n\r\n\
+                    HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+                    {\"id\":\"18f3\"}\r\n";
+        assert_eq!(json_of(part).expect("an object")["id"], "18f3");
+        assert_eq!(
+            json_of("{\"id\":\"18f3\"}\r\n--batch_abc\r\nContent-Type: x\r\n")
+                .expect("an object")["id"],
+            "18f3"
+        );
+
+        // The preamble and the epilogue of a multipart body carry no JSON, and
+        // neither does a part that came back as anything but JSON.
+        assert_eq!(json_of("\r\n"), None);
+        assert_eq!(json_of("--\r\n"), None);
+        assert_eq!(json_of("HTTP/1.1 500 Internal Error\r\n\r\n<html>oops</html>"), None);
+        // An inner error is an object, but not a message: it carries no id, so
+        // the page simply does not have that row.
+        let error = json_of("HTTP/1.1 404 Not Found\r\n\r\n{\"error\":{\"code\":404}}")
+            .expect("an object");
+        assert!(error.get("id").is_none());
+    }
+
+    // ---------------------------------------------------- the page on disk
+
+    /// A page exactly as a fetch builds one.
+    fn page(email: &str, ids: &[&str], next: Option<&str>) -> Value {
+        let messages: Vec<Value> = ids
+            .iter()
+            .map(|id| {
+                json!({"id": id, "from": "Ale <ale@acme.com>", "subject": "Re: the quote",
+                       "date": "2025-09-12 10:33", "unread": true})
+            })
+            .collect();
+        json!({"account": email, "messages": messages, "next_page": next})
+    }
+
+    /// Writes `text` where a cached page or a cached message would be, which is
+    /// the only way to have a file there that is not one.
+    fn put(file: std::path::PathBuf, text: &str) {
+        use std::io::Write;
+        let mut out = store::create(&file).expect("a file");
+        out.write_all(text.as_bytes()).expect("written");
+    }
+
+    /// The newest page is kept so a window has mail to draw before the network
+    /// has answered, and it comes back as the page it was.
+    #[test]
+    fn the_newest_page_is_kept_and_handed_back() {
+        paths::with_state_dir(|_| {
+            let email = "kept@acme.com";
+            assert_eq!(cached_page(email), None, "a fresh computer has no page");
+
+            save_page(email, &page(email, &["18f3", "18f2"], Some("tok3n")));
+            let cached = cached_page(email).expect("a page");
+            assert_eq!(cached["account"], email);
+            assert_eq!(cached["messages"].as_array().expect("rows").len(), 2);
+            assert_eq!(cached["messages"][0]["id"], "18f3");
+            assert_eq!(cached["next_page"], "tok3n");
+
+            // The file says when it was fetched; the page handed over does not
+            // — that is the cache's own bookkeeping, not a row.
+            let file = std::fs::read_to_string(paths::list_cache_file(email)).expect("the file");
+            let on_disk: Value = serde_json::from_str(&file).expect("json");
+            assert!(on_disk["fetched"].as_u64().expect("a stamp") > 0);
+            assert!(cached.get("fetched").is_none());
+        });
+    }
+
+    /// A file with no rows in it is not a page: it is fetched instead, rather
+    /// than drawn as an empty mailbox.
+    #[test]
+    fn a_file_that_is_not_a_page_is_not_used_as_one() {
+        paths::with_state_dir(|_| {
+            let email = "junk@acme.com";
+            for text in ["", "not json at all", "{}", "[]", "{\"messages\": null}"] {
+                put(paths::list_cache_file(email), text);
+                assert_eq!(cached_page(email), None, "\"{text}\" is not a page");
+            }
+        });
+    }
+
+    /// A row that is now wrong is corrected where it sits: one flag is not
+    /// worth a refetch, and a row that lies is worse than one a second old.
+    #[test]
+    fn marking_a_message_amends_the_cached_row() {
+        paths::with_state_dir(|_| {
+            let email = "amend@acme.com";
+            save_page(email, &page(email, &["18f3", "18f2"], Some("tok3n")));
+
+            cache_unread(email, "18f3", false);
+            let cached = cached_page(email).expect("a page");
+            assert_eq!(cached["messages"][0]["unread"], false);
+            assert_eq!(cached["messages"][1]["unread"], true, "and only that row");
+            assert_eq!(cached["next_page"], "tok3n", "the rest of the page is untouched");
+
+            // And back again, for a message put back to unread.
+            cache_unread(email, "18f3", true);
+            assert_eq!(
+                cached_page(email).expect("a page")["messages"][0]["unread"],
+                true
+            );
+
+            // A message this page has never heard of changes nothing.
+            cache_unread(email, "nope", false);
+            let rows = cached_page(email).expect("a page");
+            assert_eq!(rows["messages"].as_array().expect("rows").len(), 2);
+        });
+    }
+
+    /// A trashed message leaves the cached page, as it left the mailbox.
+    #[test]
+    fn a_trashed_message_leaves_the_cached_page() {
+        paths::with_state_dir(|_| {
+            let email = "drop@acme.com";
+            save_page(email, &page(email, &["18f3", "18f2"], None));
+
+            cache_drop(email, "18f2");
+            let cached = cached_page(email).expect("a page");
+            let ids: Vec<&str> = cached["messages"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| row["id"].as_str().expect("an id"))
+                .collect();
+            assert_eq!(ids, vec!["18f3"]);
+
+            // Trashing it twice is not an error, and does not empty the page.
+            cache_drop(email, "18f2");
+            let cached = cached_page(email).expect("a page");
+            assert_eq!(cached["messages"].as_array().expect("rows").len(), 1);
+        });
+    }
+
+    /// A computer with no cached page has nothing to amend — and amending it
+    /// does not conjure one.
+    #[test]
+    fn amending_a_page_this_computer_does_not_have_is_not_an_error() {
+        paths::with_state_dir(|_| {
+            let email = "nothing@acme.com";
+            cache_unread(email, "18f3", false);
+            cache_drop(email, "18f3");
+            assert!(!paths::list_cache_file(email).exists());
+            assert_eq!(cached_page(email), None);
+        });
+    }
+
+    /// Every page says whether it came off the disk or off the wire, so a
+    /// window knows a fresher one is on its way.
+    #[test]
+    fn a_page_says_whether_it_came_off_the_disk() {
+        assert_eq!(flagged(json!({"messages": []}), true)["cached"], true);
+        assert_eq!(flagged(json!({"messages": []}), false)["cached"], false);
+        // Nothing to flag is not a panic.
+        assert_eq!(flagged(json!([]), true), json!([]));
+    }
+
+    // ------------------------------------------------- the message on disk
+
+    /// A message does not change, so a message read once is read from disk
+    /// every time after: no call to Gmail, and no second mark — it was marked
+    /// the first time.
+    #[test]
+    fn a_message_read_once_is_read_from_disk() {
+        paths::with_state_dir(|_| {
+            let email = "read@acme.com";
+            let answer = json!({
+                "id": "18f3a2c9b1",
+                "from": "Ale <ale@acme.com>",
+                "subject": "Re: the quote",
+                "date": "2025-09-12 10:33",
+                "text": "Looks good — send it.",
+                "html_path": Value::Null,
+                "attachments": [],
+                "unread": false,
+                "marked_read": true,
+            });
+            save_message(email, "18f3a2c9b1", &answer);
+
+            // No account is connected under this state dir, so anything that
+            // went near the network would come back as an error instead.
+            let again = read(email, " 18f3a2c9b1 ").expect("the message, off the disk");
+            assert_eq!(again, answer);
+            assert_eq!(again["marked_read"], true, "marked once, on the first read");
+            assert_eq!(again["unread"], false);
+        });
+    }
+
+    /// A read whose mark did not go through is not kept: nothing calls Gmail
+    /// again after a cache hit, so a cached `marked_read: false` would be
+    /// frozen there. The next open fetches the message and marks it instead.
+    #[test]
+    fn a_message_that_could_not_be_marked_read_is_not_kept() {
+        paths::with_state_dir(|_| {
+            let email = "unmarked@acme.com";
+            let unmarked = json!({
+                "id": "18f3", "text": "hi", "unread": true, "marked_read": false,
+            });
+            save_message(email, "18f3", &unmarked);
+            assert!(!paths::read_cache_file(email, "18f3").exists());
+            assert_eq!(cached_message(email, "18f3"), None);
+
+            // A message with nothing to say about the flag is not kept either.
+            save_message(email, "18f3", &json!({"id": "18f3", "text": "hi"}));
+            assert_eq!(cached_message(email, "18f3"), None);
+
+            // Marked read, and it is kept — that is the whole condition.
+            let marked = json!({
+                "id": "18f3", "text": "hi", "unread": false, "marked_read": true,
+            });
+            save_message(email, "18f3", &marked);
+            assert_eq!(cached_message(email, "18f3"), Some(marked));
+        });
+    }
+
+    /// A file with no message in it is not a message: the next open fetches.
+    #[test]
+    fn a_file_that_is_not_a_message_is_fetched_again() {
+        paths::with_state_dir(|_| {
+            let email = "junkread@acme.com";
+            for text in ["", "not json at all", "{}", "{\"text\": \"hi\"}"] {
+                put(paths::read_cache_file(email, "18f3"), text);
+                assert!(
+                    cached_message(email, "18f3").is_none(),
+                    "\"{text}\" is not a message"
+                );
+            }
+        });
+    }
+
+    /// The two things that make a cached message wrong — put back to unread,
+    /// and moved to the trash — forget it, so the next open fetches it again.
+    #[test]
+    fn forgetting_a_message_removes_its_file() {
+        paths::with_state_dir(|_| {
+            let email = "forget@acme.com";
+            save_message(
+                email,
+                "18f3",
+                &json!({"id": "18f3", "text": "hi", "marked_read": true}),
+            );
+            assert!(paths::read_cache_file(email, "18f3").exists());
+            assert!(cached_message(email, "18f3").is_some());
+
+            forget_message(email, "18f3");
+            assert!(!paths::read_cache_file(email, "18f3").exists());
+            assert!(cached_message(email, "18f3").is_none());
+
+            // Forgetting one that is not there is not an error.
+            forget_message(email, "18f3");
+        });
     }
 
     #[test]

@@ -77,12 +77,9 @@ pub fn add_account(file: &Path, email: &str) -> Result<(), String> {
 
 /// Where one account's OAuth tokens live.
 pub fn oauth_token_file(dir: &Path, email: &str) -> PathBuf {
-    // An address is a filename here, so nothing in it may be a path.
-    let safe: String = email
-        .chars()
-        .map(|c| if c == '/' || c == '\\' { '_' } else { c })
-        .collect();
-    dir.join(format!("{safe}.json"))
+    // An address is a filename here, so nothing in it may be a path — the one
+    // rule for that lives in `paths`.
+    dir.join(format!("{}.json", crate::paths::safe(email)))
 }
 
 /// Reads one account's OAuth tokens.

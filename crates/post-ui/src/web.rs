@@ -321,11 +321,12 @@ mod real {
         placed: Placed,
         /// Which message is in it, so a redraw does not reload it.
         showing: Option<String>,
-        /// The rectangle last handed to the platform, in whole physical
-        /// pixels. Nothing but a skip of the identical call rests on this:
-        /// it is dropped whenever the view is shown, hidden or loaded, so the
-        /// next frame places the pane again from scratch.
-        applied: Option<Exact>,
+        /// The placement last handed to the platform: the rectangle in whole
+        /// physical pixels, and the density it was converted at. Nothing but a
+        /// skip of the identical call rests on this: it is dropped whenever the
+        /// view is shown, hidden or loaded, so the next frame places the pane
+        /// again from scratch.
+        applied: Option<(Exact, f64)>,
         /// What `set_visible` was last told, so it is told once.
         visible: bool,
         /// Armed by each load, spent by the navigation it allows.
@@ -464,16 +465,20 @@ mod real {
         /// anything other than the exact rectangle already applied is applied
         /// again, and applied all the way down to the native window rather
         /// than left to whatever GTK would have allocated by itself. The one
-        /// thing skipped is the call that would change nothing.
+        /// thing skipped is the call that would change nothing — which is the
+        /// same rectangle *at the same density*: the native side is told the
+        /// rectangle divided by GDK's scale, so the same rectangle on a screen
+        /// that changed density is a different window, and is placed again.
         pub fn place(&mut self, at: Px) {
             let Some(view) = &self.view else {
                 return;
             };
-            let want = exact(at);
+            let scale = scale_of(view);
+            let want = placement(at, scale);
             if self.applied == Some(want) {
                 return;
             }
-            let whole = lands_in(at, scale_of(view));
+            let whole = lands_in(at, scale);
             match self.kind {
                 Placed::Pane => {
                     let _ = view.set_bounds(bounds(at));
@@ -511,7 +516,7 @@ mod real {
         /// TEMPORARY probe: what was last applied.
         #[doc(hidden)]
         pub fn debug_applied(&self) -> Option<(i32, i32, i32, i32)> {
-            self.applied.map(|e| (e.x, e.y, e.w, e.h))
+            self.applied.map(|(e, _)| (e.x, e.y, e.w, e.h))
         }
 
         /// TEMPORARY probe: the scale the gate converts with.
@@ -598,6 +603,13 @@ mod real {
             w: at.w.max(1.0).round() as i32,
             h: at.h.max(1.0).round() as i32,
         }
+    }
+
+    /// What a placement is: the rectangle asked for and the density it was
+    /// placed at. Both, because the native side is told the one divided by the
+    /// other — the same rectangle at a new density lands somewhere else.
+    fn placement(at: Px, scale: f64) -> (Exact, f64) {
+        (exact(at), scale)
     }
 
     /// The same rectangle again, straight at the native window under the view.
@@ -745,7 +757,7 @@ mod real {
 
     #[cfg(test)]
     mod tests {
-        use super::{exact, lands_in, Px, Whole};
+        use super::{exact, lands_in, placement, Body, Px, Whole};
 
         /// What the pane is compared by: the rectangle asked for, in whole
         /// physical pixels. The same rectangle frame after frame is the same
@@ -777,6 +789,55 @@ mod real {
             assert_eq!((none.w, none.h), (1, 1));
         }
 
+        /// The rectangle is compared in whole physical pixels, so a fraction of
+        /// one is the same rectangle and the call is skipped; a whole one is a
+        /// different rectangle and the pane is placed again.
+        #[test]
+        fn a_fraction_of_a_pixel_is_still_the_same_rectangle() {
+            let pane = Px {
+                x: 11.0,
+                y: 103.0,
+                w: 1535.0,
+                h: 963.0,
+            };
+            let first = exact(pane);
+            assert_eq!(exact(Px { w: 1535.4, ..pane }), first);
+            assert_eq!(exact(Px { x: 10.6, ..pane }), first);
+            assert_eq!(exact(Px { y: 103.4, ..pane }), first);
+            assert_ne!(exact(Px { w: 1535.6, ..pane }), first);
+            assert_ne!(exact(Px { x: 11.6, ..pane }), first);
+
+            // A rectangle of less than nothing is still a window.
+            let inverted = exact(Px {
+                w: -40.0,
+                h: -1.0,
+                ..pane
+            });
+            assert_eq!((inverted.w, inverted.h), (1, 1));
+        }
+
+        /// Nothing is remembered until there is a view to place. A body built
+        /// on a computer that gave it no webview applies nothing, keeps
+        /// nothing, and hiding it is not an error.
+        #[test]
+        fn a_body_with_no_view_remembers_no_rectangle() {
+            let mut body = Body::default();
+            assert_eq!(body.debug_applied(), None);
+
+            body.place(Px {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            });
+            assert_eq!(body.debug_applied(), None, "there was nothing to place");
+
+            body.hide();
+            assert_eq!(body.debug_applied(), None);
+            assert_eq!(body.debug_geometry(), None);
+            assert_eq!(body.debug_scale(), 0.0);
+        }
+
         /// Where that rectangle lands, which is what the native side is told:
         /// the physical rectangle divided by the screen's density, exactly as
         /// `set_bounds` divides it.
@@ -806,6 +867,34 @@ mod real {
                     h: 480
                 }
             );
+            // The same rectangle at a different density is a different
+            // rectangle on the native side.
+            assert_ne!(lands_in(pane, 1.0), lands_in(pane, 2.0));
+        }
+
+        /// So the density is part of what a placement is compared by: a screen
+        /// that changed density, with the pane's rectangle unmoved, is placed
+        /// again rather than skipped as the call that would change nothing.
+        #[test]
+        fn the_same_rectangle_at_a_new_density_is_a_new_placement() {
+            let pane = Px {
+                x: 10.0,
+                y: 100.0,
+                w: 1536.0,
+                h: 960.0,
+            };
+            let applied = placement(pane, 1.0);
+            assert_eq!(
+                placement(pane, 1.0),
+                applied,
+                "the next frame, and every one after"
+            );
+            assert_ne!(placement(pane, 2.0), applied, "a screen that changed density");
+            assert_ne!(placement(Px { w: 800.0, ..pane }, 1.0), applied);
+
+            // And the rectangle that would then be handed to the native side
+            // is the one the new density asks for, not the one already there.
+            assert_eq!(lands_in(pane, 2.0).w, 768);
         }
     }
 }
