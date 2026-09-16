@@ -830,31 +830,28 @@ mod tests {
         assert_eq!(app.status, "");
     }
 
-    /// In a conversation the same two keys walk its messages instead, and
-    /// Enter opens the one they land on. The selection in the list behind
+    /// In a conversation the arrows scroll the reading; the messages are
+    /// walked by clicking their lines. The selection in the list behind
     /// stays exactly where the reader left it.
     #[test]
-    fn in_a_conversation_the_arrows_walk_its_messages() {
+    fn in_a_conversation_the_arrows_scroll_the_reading() {
         let mut app = reading("18f7");
         app.focus = 7;
         let thread = app.conversation.as_ref().expect("a conversation");
         assert_eq!(thread.focus, 2, "opened at the newest");
         assert_eq!(thread.open, Some(2));
 
-        app.step(-1);
+        app.step(1);
         let thread = app.conversation.as_ref().expect("a conversation");
-        assert_eq!(thread.focus, 1, "up walks back through the conversation");
-        assert_eq!(thread.open, Some(2), "and opens nothing on the way");
+        assert!(app.body_scroll > 0.0, "down reads on");
+        assert_eq!(thread.focus, 2, "the conversation's lines stay put");
+        assert_eq!(thread.open, Some(2), "and what is open stays open");
         assert_eq!(app.focus, 7, "the list behind it did not move");
-        assert!(app.follow_focus, "the conversation follows the keyboard");
+        app.step(-1);
+        assert_eq!(app.body_scroll, 0.0, "up reads back");
 
         app.exec(Command::Open, &eframe::egui::Context::default());
-        let thread = app.conversation.as_ref().expect("a conversation");
-        assert_eq!(thread.open, Some(1), "Enter opens the one it is on");
-        assert_eq!(app.message().expect("a message").id, "18f7-b");
-
-        app.exec(Command::Open, &eframe::egui::Context::default());
-        assert!(app.message().is_none(), "and closes it again");
+        assert!(app.message().is_none(), "Enter closes the open message");
 
         // The page keys are what moves a body without a mouse.
         app.page(1);

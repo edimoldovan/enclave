@@ -139,7 +139,7 @@ fn main() -> eframe::Result {
             println!("app X window = 0x{xid:x} (created, never mapped)");
             Ok(Box::new(Probe {
                 ready,
-                body: Body::new(Vec::new()),
+                body: Body::new(Vec::new(), None, None),
                 n: 0,
                 key: "acct/1".into(),
                 xid,
