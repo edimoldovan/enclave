@@ -41,6 +41,11 @@ const BOUNDARY: &str = "enclave-post-batch";
 /// not a mailbox dump.
 pub const PAGE: usize = 25;
 
+/// What shape a saved page is in. A page saved before a row grew a field, or
+/// before the listing became the inbox, is the wrong page: it is thrown away
+/// and fetched again rather than drawn. Bump this whenever a row changes.
+const CACHE: u64 = 2;
+
 /// The shared HTTP client. Timeouts, because a hung call is worse than a failed
 /// one.
 pub fn agent() -> ureq::Agent {
@@ -88,8 +93,12 @@ pub fn list(email: &str, page: Option<&str>) -> Result<Value, String> {
 }
 
 /// One page, straight from Gmail: the ids, then their headers in one batch.
+///
+/// The inbox, not all mail: a listing is what arrived, so a reply of this
+/// account's own is not a line of its own. A conversation still shows every
+/// message on it — `threads.get` is not filtered.
 fn fetch(email: &str, page: Option<&str>) -> Result<Value, String> {
-    let mut url = format!("{API}/messages?maxResults={PAGE}");
+    let mut url = format!("{API}/messages?maxResults={PAGE}&labelIds=INBOX");
     if let Some(token) = page {
         url.push_str(&format!("&pageToken={}", oauth::urlencode(token)));
     }
@@ -136,7 +145,8 @@ fn batch(email: &str, ids: &[String]) -> Result<Vec<Value>, String> {
              Content-Type: application/http\r\n\
              Content-ID: <{id}>\r\n\r\n\
              GET /gmail/v1/users/me/messages/{id}?format=metadata\
-             &metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date\r\n\r\n"
+             &metadataHeaders=From&metadataHeaders=To\
+             &metadataHeaders=Subject&metadataHeaders=Date\r\n\r\n"
         ));
     }
     body.push_str(&format!("--{BOUNDARY}--\r\n"));
@@ -168,16 +178,26 @@ fn batch(email: &str, ids: &[String]) -> Result<Vec<Value>, String> {
 /// One message's row in a listing, out of Gmail's JSON.
 pub fn summary(message: &Value) -> Value {
     let payload = message.get("payload").unwrap_or(&Value::Null);
-    let unread = message
-        .get("labelIds")
-        .and_then(Value::as_array)
-        .is_some_and(|labels| labels.iter().any(|l| l.as_str() == Some("UNREAD")));
+    let labelled = |label: &str| {
+        message
+            .get("labelIds")
+            .and_then(Value::as_array)
+            .is_some_and(|labels| labels.iter().any(|l| l.as_str() == Some(label)))
+    };
     json!({
         "id": message.get("id").and_then(Value::as_str).unwrap_or_default(),
+        // Which conversation this message is on. Gmail puts it on every shape
+        // a message comes back in, so a listing row carries it and the rows
+        // group without a second call.
+        "thread_id": message.get("threadId").and_then(Value::as_str).unwrap_or_default(),
         "from": mime::header(payload, "From").unwrap_or_default(),
+        "to": mime::header(payload, "To").unwrap_or_default(),
         "subject": mime::header(payload, "Subject").unwrap_or_default(),
         "date": when(message, payload),
-        "unread": unread,
+        "unread": labelled("UNREAD"),
+        // Whether this account wrote it. An alias sends under another address,
+        // so the label is what says it, not the From line.
+        "sent": labelled("SENT"),
     })
 }
 
@@ -212,6 +232,24 @@ pub fn read(email: &str, id: &str) -> Result<Value, String> {
     }
     let url = format!("{API}/messages/{id}?format=full");
     let message = request(email, "GET", &url, None)?;
+    // The plan's rule: reading a message reads it. Failing to set the flag does
+    // not lose the body we already have.
+    let marked = mark(email, id, true).is_ok();
+    let answer = whole(email, &message, marked);
+    save_message(email, id, &answer);
+    Ok(answer)
+}
+
+/// One message in full, out of Gmail's JSON: its row, its body as text, the
+/// HTML written to the state dir, and what is attached to it. `marked` is
+/// whether its unread flag has been cleared — a read message says so, and a
+/// message whose mark did not go through is not kept.
+///
+/// Shared by the one message [`read`] opens and every message in a
+/// conversation, so a member of a thread is exactly what `post_read` would
+/// have answered with.
+fn whole(email: &str, message: &Value, marked: bool) -> Value {
+    let id = message.get("id").and_then(Value::as_str).unwrap_or_default();
     let payload = message.get("payload").cloned().unwrap_or_else(|| json!({}));
     let body = mime::body(&payload);
 
@@ -244,19 +282,154 @@ pub fn read(email: &str, id: &str) -> Result<Value, String> {
         .map(|a| json!({"filename": a.filename, "mime": a.mime, "bytes": a.size}))
         .collect();
 
-    // The plan's rule: reading a message reads it. Failing to set the flag does
-    // not lose the body we already have.
-    let marked = mark(email, id, true).is_ok();
-
-    let mut answer = summary(&message);
+    let mut answer = summary(message);
     let row = answer.as_object_mut().expect("an object");
     row.insert("text".to_string(), json!(mime::cap(&text, mime::MAX_TEXT)));
     row.insert("html_path".to_string(), html_path);
     row.insert("attachments".to_string(), json!(attachments));
     row.insert("unread".to_string(), json!(!marked));
     row.insert("marked_read".to_string(), json!(marked));
-    save_message(email, id, &answer);
-    Ok(answer)
+    answer
+}
+
+/// One conversation: every message on it, oldest first, each as [`read`] would
+/// answer for it — and the unread ones among them read, because showing a
+/// message is reading it.
+///
+/// One call for the whole thread rather than one per message. A member already
+/// read once comes off the disk, exactly as a second `post_read` of it would.
+/// Each message's text has the quote under it taken off: the message it quotes
+/// is the one above it in the same answer.
+pub fn thread(email: &str, thread_id: &str) -> Result<Value, String> {
+    let fetched = fetch_thread(email, thread_id)?;
+    let id = fetched
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(thread_id.trim())
+        .to_string();
+    let members: Vec<Value> = fetched
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if members.is_empty() {
+        return Err(format!("there is no conversation {id} in {email}"));
+    }
+
+    // One modify for the whole conversation: the unread members are exactly
+    // the ones being shown, and reading them is what this call does.
+    let any_unread = members
+        .iter()
+        .any(|m| summary(m)["unread"] == Value::Bool(true));
+    let marked = !any_unread || mark_thread(email, &id).is_ok();
+
+    let mut messages = Vec::with_capacity(members.len());
+    for member in &members {
+        let mid = member.get("id").and_then(Value::as_str).unwrap_or_default();
+        let answer = match cached_message(email, mid) {
+            Some(cached) => cached,
+            None => {
+                let answer = whole(email, member, marked);
+                save_message(email, mid, &answer);
+                answer
+            }
+        };
+        if marked {
+            cache_unread(email, mid, false);
+        }
+        let mut compact = answer;
+        if let Some(row) = compact.as_object_mut() {
+            let said = row
+                .get("text")
+                .and_then(Value::as_str)
+                .map(mime::unquote)
+                .unwrap_or_default();
+            row.insert("text".to_string(), json!(said));
+        }
+        messages.push(compact);
+    }
+
+    // What the conversation is about is what its newest message calls it: a
+    // subject that changed mid-thread changed for everybody.
+    let subject = messages
+        .iter()
+        .rev()
+        .find_map(|m| {
+            m.get("subject")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(json!({
+        "account": email,
+        "thread_id": id,
+        "subject": subject,
+        "count": messages.len(),
+        "messages": messages,
+    }))
+}
+
+/// The thread Gmail has under this id — or, when the id turns out to be a
+/// message's rather than a conversation's, the conversation that message is
+/// on. `enclave post read <email> <id>` carries a message id and nothing else,
+/// and it opens the conversation like every other road in.
+fn fetch_thread(email: &str, thread_id: &str) -> Result<Value, String> {
+    let id = checked_id(thread_id)?;
+    let conversation =
+        |id: &str| request(email, "GET", &format!("{API}/threads/{id}?format=full"), None);
+    match conversation(id) {
+        Err(refused) if refused.contains("(404)") => {
+            let minimal = request(
+                email,
+                "GET",
+                &format!("{API}/messages/{id}?format=minimal"),
+                None,
+            )
+            .map_err(|_| refused.clone())?;
+            let on = minimal
+                .get("threadId")
+                .and_then(Value::as_str)
+                .ok_or(refused)?
+                .to_string();
+            conversation(checked_id(&on)?)
+        }
+        other => other,
+    }
+}
+
+/// Clears the unread flag on every message of one conversation, in one call.
+fn mark_thread(email: &str, thread_id: &str) -> Result<Value, String> {
+    let url = format!("{API}/threads/{}/modify", checked_id(thread_id)?);
+    request(email, "POST", &url, Some(json!({"removeLabelIds": ["UNREAD"]})))
+}
+
+/// One message's headers, for building a reply to it: who it is from, where
+/// they asked to be answered, who else was on it — a reply answers everybody —
+/// what it is about, when it was written — the attribution line above the quote
+/// needs that — and the two ids that thread a conversation. Metadata format, so
+/// no body comes over the wire for it.
+pub fn original(email: &str, id: &str) -> Result<Value, String> {
+    let url = format!(
+        "{API}/messages/{}?format=metadata\
+         &metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=Subject\
+         &metadataHeaders=To&metadataHeaders=Cc\
+         &metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Date",
+        checked_id(id)?
+    );
+    request(email, "GET", &url, None)
+}
+
+/// Sends a message that is already built: base64url as it will leave, on the
+/// thread it belongs to. The one call in this file that puts mail on the wire.
+pub fn send_raw(email: &str, raw: &str, thread_id: &str) -> Result<Value, String> {
+    let mut body = json!({ "raw": raw });
+    let thread_id = thread_id.trim();
+    if !thread_id.is_empty() {
+        body["threadId"] = json!(checked_id(thread_id)?);
+    }
+    request(email, "POST", &format!("{API}/messages/send"), Some(body))
 }
 
 /// Sets or clears the unread flag.
@@ -565,6 +738,10 @@ pub fn explain(code: u16, body: &str) -> String {
 fn cached_page(email: &str) -> Option<Value> {
     let text = std::fs::read_to_string(paths::list_cache_file(email)).ok()?;
     let page: Value = serde_json::from_str(&text).ok()?;
+    // A page of an older shape is not this version's page.
+    if page.get("v").and_then(Value::as_u64) != Some(CACHE) {
+        return None;
+    }
     // A file with no rows in it is not a page.
     page.get("messages").and_then(Value::as_array)?;
     Some(json!({
@@ -579,6 +756,7 @@ fn save_page(email: &str, answer: &Value) {
     let mut page = answer.clone();
     if let Some(row) = page.as_object_mut() {
         row.insert("fetched".to_string(), json!(store::now()));
+        row.insert("v".to_string(), json!(CACHE));
     }
     write_page(email, &page);
 }
@@ -770,6 +948,8 @@ mod tests {
     fn a_listing_row_is_who_what_when_and_unread() {
         let row = summary(&metadata());
         assert_eq!(row["id"], "18f3a2c9b1");
+        // Which conversation it is on, so a page of rows groups itself.
+        assert_eq!(row["thread_id"], "18f3a2c9b1");
         assert_eq!(row["from"], "Ale <ale@acme.com>");
         assert_eq!(row["subject"], "Re: the quote");
         assert_eq!(row["date"], "2025-09-12 10:33");
@@ -785,6 +965,7 @@ mod tests {
         let bare = json!({"id": "abc"});
         let row = summary(&bare);
         assert_eq!(row["id"], "abc");
+        assert_eq!(row["thread_id"], "");
         assert_eq!(row["unread"], false);
         assert_eq!(row["subject"], "");
         assert_eq!(row["date"], "");

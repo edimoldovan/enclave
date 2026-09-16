@@ -1,7 +1,7 @@
-//! The three views, and the stack behind them.
+//! The four views, and the stack behind them.
 //!
 //! Post's window is one window with a back button, not a three-pane client:
-//! accounts, then one account's inbox, then one message. Back retraces steps
+//! accounts, then one account's inbox, then one message, then a reply to it. Back retraces steps
 //! that were actually taken: the window opens at one view and that view is the
 //! floor, so `enclave post list ed@…` lands in an inbox with nothing behind
 //! it, while tapping a row from that inbox puts the inbox behind the message.
@@ -19,6 +19,8 @@ pub enum View {
     Inbox { account: String },
     /// One message of one account's mail.
     Detail { account: String, id: String },
+    /// A reply being written to one message.
+    Compose { account: String, id: String },
 }
 
 impl View {
@@ -26,14 +28,29 @@ impl View {
     pub fn account(&self) -> Option<&str> {
         match self {
             View::Accounts => None,
-            View::Inbox { account } | View::Detail { account, .. } => Some(account),
+            View::Inbox { account }
+            | View::Detail { account, .. }
+            | View::Compose { account, .. } => Some(account),
         }
     }
 
-    /// The message this view is about, if any.
+    /// The message this view is *showing*, if any.
+    ///
+    /// A reply is not one: composing shows the reply being written, and the
+    /// message it answers is behind it. That is what takes the body pane off
+    /// screen — a native view would otherwise sit over the editor — and what
+    /// keeps the keys that belong to an open message out of the way of one.
     pub fn message(&self) -> Option<&str> {
         match self {
             View::Detail { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The message a reply is being written to.
+    pub fn replying_to(&self) -> Option<&str> {
+        match self {
+            View::Compose { id, .. } => Some(id),
             _ => None,
         }
     }
@@ -51,16 +68,20 @@ impl View {
             View::Detail { account, id } => {
                 vec!["read".to_string(), account.clone(), id.clone()]
             }
+            View::Compose { account, id } => {
+                vec!["reply".to_string(), account.clone(), id.clone()]
+            }
         }
     }
 
     /// The view `enclave post <words>` asks for — or `None` when those words
     /// are a terminal verb, or are not a verb at all.
     ///
-    /// Only the three views have a command: everything else (`add-account`,
-    /// `mark`, `delete`, `attachment`, `accounts`, the help, a typo) stays in
-    /// the terminal, where it already says the right thing. A page token has no
-    /// view to be, so `list --page …` stays a terminal listing too.
+    /// Only the four views have a command: everything else (`add-account`,
+    /// `mark`, `delete`, `attachment`, `accounts`, `draft`, `send`, the help, a
+    /// typo) stays in the terminal, where it already says the right thing. A
+    /// page token has no view to be, so `list --page …` stays a terminal
+    /// listing too.
     pub fn of_words<S: AsRef<str>>(words: &[S]) -> Option<View> {
         let words: Vec<&str> = words.iter().map(AsRef::as_ref).collect();
         match words.as_slice() {
@@ -69,6 +90,10 @@ impl View {
                 account: value(email)?,
             }),
             ["read", email, id] => Some(View::Detail {
+                account: value(email)?,
+                id: value(id)?,
+            }),
+            ["reply", email, id] => Some(View::Compose {
                 account: value(email)?,
                 id: value(id)?,
             }),
@@ -151,7 +176,7 @@ mod tests {
         line.split_whitespace().map(str::to_string).collect()
     }
 
-    /// The three commands that open the window, and only those three.
+    /// The four commands that open the window, and only those four.
     #[test]
     fn the_command_line_names_the_view() {
         assert_eq!(View::of_words::<String>(&[]), Some(View::Accounts));
@@ -168,6 +193,34 @@ mod tests {
                 id: "18f3a2c9b1".to_string(),
             })
         );
+        assert_eq!(
+            View::of_words(&words("reply ed@acme.com 18f3a2c9b1")),
+            Some(View::Compose {
+                account: "ed@acme.com".to_string(),
+                id: "18f3a2c9b1".to_string(),
+            })
+        );
+    }
+
+    /// A reply is not the message it answers: the message is behind it, which
+    /// is what takes the body pane off screen while the editor is up.
+    #[test]
+    fn composing_shows_a_reply_rather_than_the_message() {
+        let compose = View::Compose {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+        };
+        assert_eq!(compose.account(), Some("ed@acme.com"));
+        assert_eq!(compose.message(), None);
+        assert_eq!(compose.replying_to(), Some("18f3"));
+        assert_eq!(
+            View::Detail {
+                account: "ed@acme.com".to_string(),
+                id: "18f3".to_string()
+            }
+            .replying_to(),
+            None
+        );
     }
 
     /// And back out: a view names the words that ask for it, so a launch that
@@ -180,6 +233,10 @@ mod tests {
                 account: "ed@acme.com".to_string(),
             },
             View::Detail {
+                account: "ed@acme.com".to_string(),
+                id: "18f3a2c9b1".to_string(),
+            },
+            View::Compose {
                 account: "ed@acme.com".to_string(),
                 id: "18f3a2c9b1".to_string(),
             },
@@ -221,6 +278,8 @@ mod tests {
             "--help",
             "-h",
             "sendmail",
+            "draft ed@acme.com 18f3 hello",
+            "send ed@acme.com reply-18f3",
             // A page of a listing is not a view.
             "list ed@acme.com --page tok3n",
         ] {
@@ -232,7 +291,15 @@ mod tests {
     /// lives: a missing address or id is not a window with nothing in it.
     #[test]
     fn a_command_line_missing_its_words_opens_nothing() {
-        for line in ["list", "read", "read ed@acme.com", "list --page", "read -- 18f3"] {
+        for line in [
+            "list",
+            "read",
+            "read ed@acme.com",
+            "list --page",
+            "read -- 18f3",
+            "reply",
+            "reply ed@acme.com",
+        ] {
             assert_eq!(View::of_words(&words(line)), None, "\"{line}\" opened a window");
         }
         // A flag where an address belongs is a flag, not an address.
@@ -249,6 +316,10 @@ mod tests {
                 account: "ed@acme.com".to_string(),
             },
             View::Detail {
+                account: "ed@acme.com".to_string(),
+                id: "18f3".to_string(),
+            },
+            View::Compose {
                 account: "ed@acme.com".to_string(),
                 id: "18f3".to_string(),
             },

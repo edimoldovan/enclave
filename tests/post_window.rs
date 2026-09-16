@@ -106,6 +106,7 @@ fn a_view_travels_as_an_op_and_arrives_as_itself() {
             id: Some(9),
             account: Some("ale@acme.com".to_string()),
             message: Some("18f2".to_string()),
+            compose: false,
         },
     )
     .expect("sent");
@@ -168,6 +169,7 @@ fn a_line_that_is_not_an_op_moves_nothing() {
             id: Some(1),
             account: Some("ed@acme.com".to_string()),
             message: None,
+            compose: false,
         },
     )
     .expect("sent");
@@ -201,6 +203,13 @@ fn the_command_line_and_the_wire_agree_on_the_view() {
                 id: "18f3".to_string(),
             },
         ),
+        (
+            vec!["post", "reply", "ed@acme.com", "18f3"],
+            View::Compose {
+                account: "ed@acme.com".to_string(),
+                id: "18f3".to_string(),
+            },
+        ),
     ] {
         // What a person types asks for the window; it never becomes one.
         assert_eq!(
@@ -208,14 +217,19 @@ fn the_command_line_and_the_wire_agree_on_the_view() {
             Role::PostOpen { view: view.clone() },
             "{args:?}"
         );
-        let (account, message) = posthost::parts(&view);
-        assert_eq!(posthost::view_of(account, message), view);
+        let (account, message, compose) = posthost::parts(&view);
+        assert_eq!(posthost::view_of(account, message, compose), view);
     }
 
     // A message with no account to read it from is not a message: the window
-    // shows the accounts rather than nothing at all.
+    // shows the accounts rather than nothing at all — whether or not a reply
+    // to it was asked for.
     assert_eq!(
-        posthost::view_of(None, Some("18f3".to_string())),
+        posthost::view_of(None, Some("18f3".to_string()), false),
+        View::Accounts
+    );
+    assert_eq!(
+        posthost::view_of(None, Some("18f3".to_string()), true),
         View::Accounts
     );
 }
@@ -302,6 +316,10 @@ fn the_words_a_window_is_started_with_are_the_view_itself() {
             account: "ed@acme.com".to_string(),
             id: "18f3a2c9b1".to_string(),
         },
+        View::Compose {
+            account: "ed@acme.com".to_string(),
+            id: "18f3a2c9b1".to_string(),
+        },
     ] {
         let args = posthost::launch_args(&view);
         assert_eq!(args[0], "post", "{view:?}");
@@ -309,8 +327,8 @@ fn the_words_a_window_is_started_with_are_the_view_itself() {
         assert_eq!(View::of_words(&args[2..]), Some(view.clone()), "{view:?}");
         assert_eq!(role::of(&args), Role::PostWindow { view: view.clone() });
         // And the socket says the same thing as the command line.
-        let (account, message) = posthost::parts(&view);
-        assert_eq!(posthost::view_of(account, message), view);
+        let (account, message, compose) = posthost::parts(&view);
+        assert_eq!(posthost::view_of(account, message, compose), view);
     }
 }
 

@@ -56,6 +56,23 @@ fn build(rect: Rect, name: &str, color: Color32) -> Option<Vec<Shape>> {
                     thin,
                 ));
             }
+            // Reply: an arrow turning back on itself, the way every mail
+            // client has drawn it for thirty years.
+            "reply" => {
+                push(Shape::line(
+                    vec![p(0.42, 0.20), p(0.14, 0.42), p(0.42, 0.64)],
+                    thick,
+                ));
+                push(Shape::line(
+                    vec![p(0.14, 0.42), p(0.60, 0.42), p(0.82, 0.56), p(0.86, 0.84)],
+                    thin,
+                ));
+            }
+            // Send: away and upward, with the head on the far end.
+            "send" => {
+                line((0.14, 0.84), (0.78, 0.26));
+                pen.arrow_head(0.86, 0.18, 0.74, -0.67, 0.22);
+            }
             // One person: the account rows and the accounts button.
             "account" => {
                 pen.circle_stroke(p(0.5, 0.33), pen.side() * 0.17, thin);
@@ -110,7 +127,7 @@ mod tests {
     fn every_icon_the_ribbon_uses_is_drawn() {
         let rect = Rect::from_min_size(Pos2::ZERO, eframe::egui::Vec2::splat(24.0));
         for name in [
-            "mail", "mail_open", "account", "back", "refresh", "plus", "unread",
+            "mail", "mail_open", "account", "back", "refresh", "plus", "unread", "reply", "send",
             // These come from the shared set.
             "trash", "open",
         ] {

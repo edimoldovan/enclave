@@ -8,6 +8,7 @@
 //! host    {"op":"host","product":"grido"}          a process claims the role
 //! open    {"op":"open","id":3,"path":"/a/b.xlsx"}  put this file on screen
 //! view    {"op":"view","id":5,"account":…,…}       put this mail view on screen
+//!         (with "compose":true, a reply to that message)
 //! call    {"op":"call","id":4,"tool":…,"args":…}   run a tool in that window
 //! reply   {"op":"reply","id":4,"ok":true,…}        one per request, by id
 //! ```
@@ -35,11 +36,13 @@ pub enum Msg {
     /// Show this file (or nothing but the window itself).
     Open { id: Option<u64>, path: Option<PathBuf> },
     /// Show this mail view: no account is the account list, an account is that
-    /// account's mail, an account and a message is that message.
+    /// account's mail, an account and a message is that message — and that
+    /// message with `compose` is a reply being written to it.
     View {
         id: Option<u64>,
         account: Option<String>,
         message: Option<String>,
+        compose: bool,
     },
     /// Run one tool in the product's window.
     Call { id: u64, tool: String, args: Value },
@@ -69,6 +72,7 @@ impl Msg {
                 id,
                 account,
                 message,
+                compose,
             } => {
                 let mut v = json!({"op": "view"});
                 if let Some(id) = id {
@@ -79,6 +83,9 @@ impl Msg {
                 }
                 if let Some(message) = message {
                     v["message"] = json!(message);
+                }
+                if *compose {
+                    v["compose"] = json!(true);
                 }
                 v
             }
@@ -120,6 +127,7 @@ impl Msg {
                 id,
                 account: text(&value, "account"),
                 message: text(&value, "message"),
+                compose: value.get("compose").and_then(Value::as_bool) == Some(true),
             }),
             "call" => Some(Msg::Call {
                 id: id?,

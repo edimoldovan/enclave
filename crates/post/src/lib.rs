@@ -14,14 +14,16 @@
 //! - [`store`] — the account list, the OAuth tokens (0600) and the OAuth
 //!   client, which is embedded at build time.
 //! - [`oauth`] — code+PKCE through the system browser, on a loopback port.
-//! - [`gmail`] — the REST calls: list, read, mark, trash, attachment.
+//! - [`gmail`] — the REST calls: list, read, mark, trash, attachment, send.
 //! - [`mime`] — the pure parts: base64url, MIME walking, HTML to text, dates.
+//! - [`reply`] — answering a message: the draft, and sending it.
 //! - [`verbs`] — the palette: one table of verbs that both doors dispatch off.
 
 pub mod gmail;
 pub mod mime;
 pub mod oauth;
 pub mod paths;
+pub mod reply;
 pub mod store;
 pub mod verbs;
 

@@ -30,6 +30,12 @@ printf '%s\n' '{"decision":"deny","always_allow":false}'"#;
 /// a compositor that would not open the window.
 const SAYS_NOTHING: &str = "read question\nexit 0";
 
+/// A dialog that keeps the question it was asked, ticks "always allow", and
+/// approves — so a test can read what the user would have seen.
+const APPROVES_ALWAYS: &str = r#"IFS= read -r question
+printf '%s\n' "$question" > "$(dirname "$0")/asked.json"
+printf '%s\n' '{"decision":"approve","always_allow":true}'"#;
+
 /// A scratch home for one test. The socket, the allowlist and everything the
 /// server writes on startup land under here, nowhere near the real ones.
 fn scratch(name: &str) -> PathBuf {
@@ -93,6 +99,7 @@ fn serve(dir: PathBuf) -> Serving {
         // configs it registers with: all under the scratch dir.
         .env("XDG_RUNTIME_DIR", &dir)
         .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_DATA_HOME", &dir)
         .env("HOME", &dir)
         .env("ENCLAVE_CONFIRM_CMD", dir.join("dialog.sh"))
         .stdin(Stdio::null())
@@ -177,7 +184,7 @@ fn the_server_serves_with_no_display() {
     let reply = talk.reply();
     assert_eq!(
         reply["result"]["tools"].as_array().expect("tools").len(),
-        31,
+        34,
         "the whole surface, served without a screen"
     );
 
@@ -283,4 +290,115 @@ fn always_allow_from_the_dialog_is_written_down() {
 
     let written = std::fs::read_to_string(serving.allowlist()).expect("an allowlist file");
     assert!(written.contains("enclave_send_file"), "got {written:?}");
+}
+
+
+// ------------------------------------------------------------------- the mail
+
+/// Writes a draft under the server's own state dir, the way `post_draft`
+/// would — which is what `post_send` is asked about.
+fn draft(dir: &Path, account: &str, draft_id: &str, body: &str) {
+    let file = dir
+        .join("enclave")
+        .join("postdrafts")
+        .join(account)
+        .join(format!("{draft_id}.json"));
+    std::fs::create_dir_all(file.parent().expect("a directory")).expect("the drafts dir");
+    std::fs::write(
+        &file,
+        json!({
+            "draft_id": draft_id,
+            "account": account,
+            "replying_to": "18f3",
+            "to": "ale@acme.com",
+            "subject": "Re: the quote",
+            "body": body,
+            "in_reply_to": "<abc@acme.com>",
+            "references": "<abc@acme.com>",
+            "thread_id": "18f3a",
+            "sent": false,
+        })
+        .to_string(),
+    )
+    .expect("write the draft");
+}
+
+/// The one mail verb that acts reaches the server, is asked about, and the
+/// question carries the whole reply — the address, the subject and every word
+/// of the body. Nothing is approved by seeing a tool name.
+#[test]
+fn sending_a_reply_is_asked_about_with_the_whole_message_in_the_question() {
+    let dir = scratch("send");
+    dialog(&dir, APPROVES_ALWAYS);
+    let body = "Looks good — send it.\nBoth days work for me.\n\n/Ed";
+    draft(&dir, "ed@acme.com", "reply-18f3", body);
+    let serving = serve(dir);
+    let mut talk = serving.talk();
+
+    talk.call(
+        1,
+        "post_send",
+        json!({"email": "ed@acme.com", "draft_id": "reply-18f3"}),
+    );
+    let text = talk.result();
+    // It got past the gate and into the mail library: there is no account
+    // connected under this scratch home, so that is what it says. What it must
+    // never say is that the server does not know the verb.
+    assert_ne!(text, enclave::confirm::DENIED);
+    assert!(!text.contains("no such tool"), "got {text:?}");
+
+    let asked: Value = serde_json::from_str(
+        &std::fs::read_to_string(serving.dir.join("asked.json")).expect("the question"),
+    )
+    .expect("json");
+    assert_eq!(asked["tool"], "post_send");
+    let sentence = asked["sentence"].as_str().expect("a sentence");
+    assert!(sentence.contains("ale@acme.com"), "got {sentence}");
+    let shown = asked["args"].as_str().expect("what is shown");
+    assert!(shown.contains("To: ale@acme.com"), "got {shown}");
+    assert!(shown.contains("Subject: Re: the quote"), "got {shown}");
+    assert!(shown.ends_with(body), "the body was cut: {shown}");
+    // And no checkbox: a reply can never be allowed for good, so the dialog is
+    // not offered the words for one.
+    assert_eq!(asked["always_label"], "");
+
+    // The dialog ticked it anyway, and it still was not written down.
+    let allowed = serving.allowlist();
+    let written = std::fs::read_to_string(&allowed).unwrap_or_default();
+    assert!(
+        !written.contains("post_send"),
+        "sending mail was allowed for good: {written}"
+    );
+}
+
+/// Deny, and nothing leaves.
+#[test]
+fn a_denied_reply_is_not_sent() {
+    let dir = scratch("send-deny");
+    dialog(&dir, DENIES);
+    draft(&dir, "ed@acme.com", "reply-18f3", "Looks good.");
+    let serving = serve(dir);
+    let mut talk = serving.talk();
+
+    talk.call(
+        1,
+        "post_send",
+        json!({"email": "ed@acme.com", "draft_id": "reply-18f3"}),
+    );
+    assert_eq!(talk.result(), enclave::confirm::DENIED);
+}
+
+/// And the verbs that only read are not asked about at all: a dialog that
+/// refuses everything never sees them.
+#[test]
+fn the_free_mail_verbs_are_never_asked_about() {
+    let dir = scratch("mail-free");
+    dialog(&dir, DENIES);
+    let serving = serve(dir);
+    let mut talk = serving.talk();
+
+    talk.call(1, "post_accounts", json!({}));
+    let text = talk.result();
+    assert_ne!(text, enclave::confirm::DENIED);
+    assert!(text.contains("accounts"), "an answer, not a refusal: got {text:?}");
 }

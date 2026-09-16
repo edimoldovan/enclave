@@ -27,12 +27,18 @@
 "Backspace" = "back"
 "Escape" = "back"
 "Delete" = "delete"
+# Reply: the one bare letter, because it is the one thing you do to a message
+# you are reading, and it is the letter every mail client uses for it.
+"R" = "reply"
 
 # --- Doing something: Ctrl+<letter> ---
 "Ctrl+R" = "refresh"
 "Ctrl+U" = "mark_unread"
 "Ctrl+N" = "add_account"
 "Ctrl+W" = "quit"
+# Sending the reply you have written. Ctrl, because the body editor has the
+# keyboard while you write and a bare key there is a letter.
+"Ctrl+Enter" = "send"
 
 # --- Help ---
 "Ctrl+/" = "shortcut_help"

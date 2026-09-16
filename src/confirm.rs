@@ -40,13 +40,22 @@ const POLL: Duration = Duration::from_millis(250);
 /// refusal is a refusal whether it was clicked or waited out.
 pub const DENIED: &str = "denied by the user";
 
+/// Tools that may never be allowed for good.
+///
+/// "Always allow this tool" is a standing yes, and there is one thing no
+/// standing yes covers: mail leaving in the user's name. Every reply is its
+/// own question, and the dialog does not even offer the checkbox.
+pub fn always_asks(tool: &str) -> bool {
+    tool == post::verbs::SEND
+}
+
 /// Tools that do something rather than look at something.
 ///
 /// Each product owns the answer for its own verbs; an unknown name under a
 /// known prefix counts as acting, so a tool added later is asked about until
-/// someone says otherwise. Every mail verb in v1 reads, flips a read flag, or
-/// moves a message to a trash it can be pulled back out of, so none of them
-/// stop here — the first one that will is `post_send`.
+/// someone says otherwise. Every mail verb but one reads, flips a read flag,
+/// moves a message to a trash it can be pulled back out of, or writes a reply
+/// down without sending it; `post_send` is the one that stops here.
 pub fn acting(tool: &str) -> bool {
     if tool == "enclave_send_file" {
         return true;
@@ -89,11 +98,21 @@ pub fn summary(tool: &str, args: &Value) -> String {
         let what = grido::app::describe(tool, args);
         return format!("In Grido: {what}.");
     }
+    if let Some((sentence, _)) = post::verbs::confirmation(tool, args) {
+        return sentence;
+    }
     format!("Run {tool}.")
 }
 
-/// The arguments, shortened to something a person can glance at.
-pub fn digest(args: &Value) -> String {
+/// What the dialog shows under the sentence.
+///
+/// Usually the arguments, shortened to something a person can glance at. A
+/// reply is the exception: what is shown is the message itself, whole — a body
+/// cut off at 160 characters is not something anyone can say yes to.
+pub fn digest(tool: &str, args: &Value) -> String {
+    if let Some((_, message)) = post::verbs::confirmation(tool, args) {
+        return message;
+    }
     let text = match args {
         Value::Object(map) if map.is_empty() => String::new(),
         other => other.to_string(),
@@ -189,7 +208,7 @@ impl Broker {
         let (answer, wait) = channel();
         let id = {
             let mut state = self.state.lock().map_err(|_| DENIED.to_string())?;
-            if state.allowed.contains(tool) {
+            if state.allowed.contains(tool) && !always_asks(tool) {
                 return Ok(());
             }
             let id = state.next_id;
@@ -198,7 +217,7 @@ impl Broker {
                 id,
                 tool: tool.to_string(),
                 summary: summary(tool, args),
-                digest: digest(args),
+                digest: digest(tool, args),
                 deadline: Instant::now() + self.timeout,
                 answer,
             });
@@ -268,7 +287,7 @@ impl Broker {
                 return;
             };
             let pending = state.queue.remove(at);
-            if always && decision == Decision::Approve {
+            if always && decision == Decision::Approve && !always_asks(&pending.tool) {
                 state.allowed.insert(pending.tool.clone());
                 let file = state.file.clone();
                 let allowed = state.allowed.clone();
@@ -334,9 +353,11 @@ pub struct Request {
     pub tool: String,
     /// The one sentence: what is about to happen.
     pub sentence: String,
-    /// The arguments, shortened; empty when there are none worth showing.
+    /// What is shown under the sentence: the arguments, shortened — or, for a
+    /// reply, the whole message that would leave.
     pub args: String,
-    /// What the "always allow" checkbox says.
+    /// What the "always allow" checkbox says, and empty for a tool that may
+    /// never be allowed for good — the dialog then has no checkbox at all.
     pub always_label: String,
     /// Seconds on the countdown before the dialog refuses by itself.
     pub seconds: u64,
@@ -349,7 +370,11 @@ impl Request {
             tool: question.tool.clone(),
             sentence: question.summary.clone(),
             args: question.digest.clone(),
-            always_label: format!("Always allow {}", question.tool),
+            always_label: if always_asks(&question.tool) {
+                String::new()
+            } else {
+                format!("Always allow {}", question.tool)
+            },
             seconds: question.left,
         }
     }

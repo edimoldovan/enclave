@@ -1,6 +1,6 @@
 //! The ribbon: one strip, and only the buttons the view on screen can act on.
 //!
-//! Post has three views and a handful of verbs, so there are no ribbon tabs to
+//! Post has four views and a handful of verbs, so there are no ribbon tabs to
 //! sort them into — a tab strip over eight buttons is furniture. The geometry,
 //! the hover treatment and the label line are the shared kit's, so the buttons
 //! sit at exactly the height and weight Grido's do.
@@ -60,6 +60,7 @@ impl PostApp {
                             ui,
                             "Message",
                             &[
+                                ("reply", "Reply", Command::Reply),
                                 ("trash", "Delete", Command::Delete),
                                 ("mail", "Unread", Command::MarkUnread),
                             ],
@@ -73,6 +74,23 @@ impl PostApp {
                                 ("account", "Accounts", Command::Accounts),
                                 ("back", "Back", Command::Back),
                             ],
+                            &mut out,
+                        );
+                    }
+                    View::Compose { .. } => {
+                        self.group(
+                            ui,
+                            "Reply",
+                            &[
+                                ("send", "Send", Command::Send),
+                                ("back", "Cancel", Command::Back),
+                            ],
+                            &mut out,
+                        );
+                        self.group(
+                            ui,
+                            "Mail",
+                            &[("account", "Accounts", Command::Accounts)],
                             &mut out,
                         );
                     }

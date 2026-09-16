@@ -14,7 +14,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui::Context;
 use enclave_ui::theme::{Palette, ThemeWatcher};
 
-use crate::client::{Done, Job, Jobs, Mailbox, Message};
+use crate::client::{Conversation, Done, Draft, Job, Jobs, Mailbox, Message};
 use crate::commands::Command;
 use crate::keymap::Keymap;
 use crate::nav::{Nav, View};
@@ -28,11 +28,26 @@ pub struct PostApp {
     pub accounts: Option<Vec<String>>,
     /// The page of mail on screen, for whichever account the view is about.
     pub mailbox: Option<Mailbox>,
-    /// The message on screen.
-    pub message: Option<Message>,
-    /// The saved HTML body as a page, ready for the webview. `None` when the
-    /// message is plain text, or when its HTML could not be read back.
-    pub body: Option<String>,
+    /// The conversation on screen: every message on it, with one open.
+    pub conversation: Option<Conversation>,
+    /// The open message's body, ready for the webview. `None` when that
+    /// message is plain text, when its HTML could not be read back, or when
+    /// nothing is open.
+    pub body: Option<Page>,
+    /// The reply being written: who it goes to and what it is about, as the
+    /// mail library addressed it. `None` until the draft comes back.
+    pub draft: Option<Draft>,
+    /// What has been typed into the reply. The editor owns this until it is
+    /// sent — the draft on disk only catches up when it is.
+    pub compose: String,
+    /// The address fields, comma separated. Filled once from the reply-all the
+    /// mail library worked out, and the reader's after that: what they say when
+    /// Send is pressed is what leaves.
+    pub to: String,
+    pub cc: String,
+    /// True between the send key and the answer: the draft is being rewritten
+    /// with what was typed, and then sent.
+    pub sending: bool,
     /// Which row the keyboard is on, in the inbox.
     pub focus: usize,
     /// Which stop the keyboard is on, in the account list: one per account,
@@ -85,8 +100,13 @@ impl PostApp {
             keymap,
             accounts: None,
             mailbox: None,
-            message: None,
+            conversation: None,
             body: None,
+            draft: None,
+            compose: String::new(),
+            to: String::new(),
+            cc: String::new(),
+            sending: false,
             focus: 0,
             account_focus: 0,
             follow_focus: false,
@@ -134,9 +154,33 @@ impl PostApp {
         self.accounts.as_ref().map_or(0, Vec::len) + 1
     }
 
-    /// The rows on screen, empty when nothing is loaded.
+    /// The messages loaded, empty when nothing is.
     pub fn rows(&self) -> &[crate::client::Row] {
         self.mailbox.as_ref().map(|m| m.rows.as_slice()).unwrap_or(&[])
+    }
+
+    /// The lines on screen — one per conversation. The inbox draws these, the
+    /// keyboard walks these, and the rows behind them are what a mark or a
+    /// trash amends.
+    pub fn threads(&self) -> &[crate::client::Thread] {
+        self.mailbox
+            .as_ref()
+            .map(|m| m.threads.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// The message whose body is on screen: the open one of the conversation.
+    pub fn message(&self) -> Option<&Message> {
+        self.conversation.as_ref()?.opened()
+    }
+
+    /// True when the conversation loaded is the one `id` asks for — by the
+    /// conversation's own id, or by any message on it, because a window opened
+    /// at `enclave post read <email> <id>` knows only a message.
+    pub fn showing(&self, id: &str) -> bool {
+        self.conversation.as_ref().is_some_and(|thread| {
+            thread.id == id || thread.messages.iter().any(|message| message.id == id)
+        })
     }
 
     /// Starts a call, waking the window when it comes back.
@@ -200,12 +244,25 @@ impl PostApp {
         });
     }
 
-    /// Drops the open message and takes its body off screen.
+    /// Drops the conversation on screen and takes its body off screen.
     pub fn forget_message(&mut self) {
-        self.message = None;
+        self.conversation = None;
         self.body = None;
         self.web.hide();
         self.asked = None;
+    }
+
+    /// Rebuilds the body pane for whichever message of the conversation is
+    /// open. Called whenever that changes — arriving, walking, expanding.
+    pub fn show_open_message(&mut self) {
+        self.body = self
+            .conversation
+            .as_ref()
+            .and_then(Conversation::opened)
+            .and_then(|message| body_page(message, &self.palette));
+        if self.body.is_none() {
+            self.web.hide();
+        }
     }
 
     /// One answer, as the change it makes.
@@ -229,7 +286,7 @@ impl PostApp {
                 // selection where the reader put it.
                 let same = self.mailbox.as_ref().is_some_and(|m| m.account == mailbox.account);
                 self.focus = if same {
-                    self.focus.min(mailbox.rows.len().saturating_sub(1))
+                    self.focus.min(mailbox.threads.len().saturating_sub(1))
                 } else {
                     0
                 };
@@ -248,23 +305,37 @@ impl PostApp {
                     mailbox.append(more);
                 }
             }
-            Done::Read(message) => {
+            Done::Thread(conversation) => {
                 self.status.clear();
+                // Showing a conversation reads what was unread on it, so every
+                // one of its rows in the list behind is read now.
                 if let Some(mailbox) = &mut self.mailbox {
-                    mailbox.set_unread(&message.id, false);
+                    for message in &conversation.messages {
+                        mailbox.set_unread(&message.id, false);
+                    }
                 }
                 // Back may have been pressed while this was on the wire. The
-                // message was still read, and its row says so — but nobody is
-                // dragged into a message they have already left.
-                if self.nav.top().message() != Some(message.id.as_str()) {
+                // messages were still read, and their rows say so — but nobody
+                // is dragged into a conversation they have already left.
+                let ours = self.nav.top().message().is_some_and(|asked| {
+                    conversation.id == asked
+                        || conversation.messages.iter().any(|m| m.id == asked)
+                });
+                if !ours {
                     return;
                 }
-                self.body = body_page(&message, &self.palette);
-                self.message = Some(message);
+                self.conversation = Some(conversation);
+                self.show_open_message();
             }
             Done::Marked { id, read } => {
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.set_unread(&id, !read);
+                }
+                if let Some(conversation) = &mut self.conversation
+                    && let Some(message) =
+                        conversation.messages.iter_mut().find(|m| m.id == id)
+                {
+                    message.unread = !read;
                 }
                 self.set_status(if read {
                     format!("{id} marked read.")
@@ -276,11 +347,61 @@ impl PostApp {
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.remove(&id);
                 }
-                if self.nav.top().message() == Some(id.as_str()) {
+                // The message left the conversation on screen too — and a
+                // conversation with nothing on it is nothing to show.
+                let emptied = match &mut self.conversation {
+                    Some(conversation) => {
+                        conversation.remove(&id);
+                        conversation.messages.is_empty()
+                    }
+                    None => false,
+                };
+                if emptied {
                     self.back();
+                } else if self.conversation.is_some() {
+                    self.show_open_message();
                 }
-                self.focus = self.focus.min(self.rows().len().saturating_sub(1));
+                self.focus = self.focus.min(self.threads().len().saturating_sub(1));
                 self.set_status(format!("{id} moved to the trash."));
+            }
+            Done::Drafted(draft) => {
+                self.status.clear();
+                // The first draft for this reply is what fills the address
+                // fields: the reply-all off the message being answered. The one
+                // that comes back on the way to sending is the fields' own, so
+                // it does not write over them.
+                if self.draft.is_none() {
+                    self.to = draft.to.clone();
+                    self.cc = draft.cc.clone();
+                }
+                // On the way to sending, the draft that just came back is the
+                // one to send: it is the typed body, written down.
+                if self.sending {
+                    match self.account().map(str::to_owned) {
+                        Some(account) => self.start(Job::Send {
+                            account,
+                            draft_id: draft.id.clone(),
+                        }),
+                        // Nowhere to send from — the reader left the reply.
+                        None => self.sending = false,
+                    }
+                }
+                self.draft = Some(draft);
+            }
+            Done::Sent { to } => {
+                self.sending = false;
+                self.compose.clear();
+                self.to.clear();
+                self.cc.clear();
+                self.draft = None;
+                // Back to the conversation that was answered, and asked for
+                // again: the reply that just left is a message on it now, and
+                // it belongs on screen under the one it answers. At the floor —
+                // a window opened straight at a reply — there is nowhere to go,
+                // and the line below is the whole of the news.
+                self.back();
+                self.forget_message();
+                self.set_status(format!("Reply sent to {to}."));
             }
             Done::Added(email) => {
                 self.connecting = false;
@@ -293,6 +414,9 @@ impl PostApp {
             Done::Failed { about, error } => {
                 self.connecting = false;
                 self.paging = false;
+                // A reply that did not go is still written: the editor keeps
+                // every word of it, and the reader can try again.
+                self.sending = false;
                 self.set_status(format!("{about} {error}"));
             }
         }
@@ -312,30 +436,103 @@ fn first_warning(warnings: &[String]) -> String {
 
 /// The chords the body pane hands back to the window instead of letting WebKit
 /// keep them: the ones bound to a command that means the same thing over an
-/// open message — leaving it, and trashing it. Read from the keymap so there is
-/// one list of them and the reader's own file is it. Everything else stays
-/// WebKit's, which is what keeps the arrows and PageUp/PageDown scrolling.
+/// open message — leaving it, trashing it, and answering it. Read from the
+/// keymap so there is one list of them and the reader's own file is it.
+/// Everything else stays WebKit's, which is what keeps the arrows and
+/// PageUp/PageDown scrolling.
 fn pane_keys(keymap: &Keymap) -> Vec<eframe::egui::KeyboardShortcut> {
     keymap
         .bindings
         .iter()
-        .filter(|(_, cmd)| matches!(cmd, Command::Back | Command::Delete))
+        .filter(|(_, cmd)| matches!(cmd, Command::Back | Command::Delete | Command::Reply))
         .map(|(chord, _)| *chord)
         .collect()
 }
 
-/// The message's saved HTML as a page to render, or nothing when there is no
-/// HTML to read — in which case the detail view shows the text body.
-fn body_page(message: &Message, palette: &Palette) -> Option<String> {
+/// One message's body, as the pane takes it.
+///
+/// The picture travels with the page rather than beside it: a verdict kept on
+/// its own could outlive the message it was read for and size the next one.
+pub struct Page {
+    /// The message's saved HTML, in the page `web::page` writes around it.
+    pub html: String,
+    /// True when this message has a picture in it. A body of pictures is
+    /// nothing its text says, so the detail view opens it at full height
+    /// instead of guessing from the text.
+    pub images: bool,
+}
+
+/// The open message's saved HTML as a page to render — or nothing when there
+/// is no HTML to read, in which case the detail view shows the text body.
+///
+/// The picture question is answered here because the file is already in hand.
+fn body_page(message: &Message, palette: &Palette) -> Option<Page> {
     let path = message.html_path.as_deref()?;
     let html = std::fs::read_to_string(path).ok()?;
     let rgb = |c: eframe::egui::Color32| [c.r(), c.g(), c.b()];
-    Some(web::page(
-        &html,
-        rgb(palette.bg),
-        rgb(palette.fg),
-        rgb(palette.accent),
-    ))
+    Some(Page {
+        images: pictured(&html),
+        html: web::page(&html, rgb(palette.bg), rgb(palette.fg), rgb(palette.accent)),
+    })
+}
+
+/// True when a body has a picture in it — one a person would see.
+///
+/// Mail is full of images that are a single pixel and are there to report that
+/// the message was opened. A message whose only image is one of those is a
+/// text message, and is measured by its text like any other.
+fn pictured(html: &str) -> bool {
+    let lower = html.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("<img") {
+        let start = from + at;
+        let end = lower[start..].find('>').map(|e| start + e).unwrap_or(lower.len());
+        let tag = &lower[start..end];
+        // `<image…>` and `<imgsomething>` are not `<img>`.
+        let named = tag[4..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        if named && !pixel(tag) {
+            return true;
+        }
+        from = end.max(start + 4);
+    }
+    false
+}
+
+/// True when an `<img …` tag is one of those pixels: a width or a height of
+/// nothing to speak of.
+fn pixel(tag: &str) -> bool {
+    ["width", "height"]
+        .iter()
+        .any(|side| attr(tag, side).is_some_and(|size| size <= 1.0))
+}
+
+/// What an attribute of a tag is set to, as a number, when it is set to one at
+/// all. Only the attribute itself counts: `max-width` is not `width`, and
+/// `width:600px` inside a style is not the attribute either.
+fn attr(tag: &str, name: &str) -> Option<f32> {
+    let mut from = 0;
+    while let Some(at) = tag[from..].find(name) {
+        let start = from + at;
+        from = start + name.len();
+        let before = tag[..start].chars().next_back().unwrap_or(' ');
+        if !before.is_whitespace() {
+            continue;
+        }
+        let Some(value) = tag[from..].trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let digits: String = value
+            .trim_start()
+            .trim_start_matches(['"', '\''])
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        return digits.parse().ok();
+    }
+    None
 }
 
 #[cfg(test)]
@@ -350,10 +547,10 @@ mod tests {
             &json!({
                 "account": "ed@acme.com",
                 "messages": [
-                    {"id": "18f3", "from": "Ale <ale@acme.com>", "subject": "Re: the quote",
-                     "date": "2025-09-12 10:33", "unread": true},
-                    {"id": "18f2", "from": "EY <cristiano@ey.com>", "subject": "Slides",
-                     "date": "2025-09-11 08:02", "unread": true}
+                    {"id": "18f3", "thread_id": "18f3", "from": "Ale <ale@acme.com>",
+                     "subject": "Re: the quote", "date": "2025-09-12 10:33", "unread": true},
+                    {"id": "18f2", "thread_id": "18f2", "from": "EY <cristiano@ey.com>",
+                     "subject": "Slides", "date": "2025-09-11 08:02", "unread": true}
                 ]
             }),
         )
@@ -369,6 +566,20 @@ mod tests {
             text: "Looks good — send it.".to_string(),
             html_path: None,
             attachments: Vec::new(),
+            unread: false,
+        }
+    }
+
+    /// A conversation of one message, exactly as `post_thread` answers for a
+    /// message nobody has replied to.
+    fn thread(id: &str) -> crate::client::Conversation {
+        crate::client::Conversation {
+            account: "ed@acme.com".to_string(),
+            id: id.to_string(),
+            subject: "Re: the quote".to_string(),
+            messages: vec![message(id)],
+            focus: 0,
+            open: Some(0),
         }
     }
 
@@ -428,11 +639,12 @@ mod tests {
         }
     }
 
-    /// A row tapped, and the answer back: the whole of opening a message.
+    /// A row tapped, and the answer back: the whole of opening a
+    /// conversation.
     fn opened(id: &str) -> PostApp {
         let mut app = inbox();
         app.open("ed@acme.com", id);
-        app.absorb(Done::Read(message(id)));
+        app.absorb(Done::Thread(thread(id)));
         app
     }
 
@@ -444,7 +656,7 @@ mod tests {
         assert_eq!(app.mailbox.as_ref().expect("a page").unread(), 2);
 
         app.open("ed@acme.com", "18f3");
-        app.absorb(Done::Read(message("18f3")));
+        app.absorb(Done::Thread(thread("18f3")));
 
         let mailbox = app.mailbox.as_ref().expect("a page");
         assert!(!mailbox.row("18f3").expect("a row").unread, "the row is read now");
@@ -459,7 +671,7 @@ mod tests {
             }
         );
         assert_eq!(app.nav.depth(), 2, "the window opened at the inbox");
-        assert_eq!(app.message.as_ref().expect("a message").id, "18f3");
+        assert_eq!(app.message().expect("a message").id, "18f3");
     }
 
     /// A reader who goes back before the message arrives stays where they are —
@@ -469,7 +681,7 @@ mod tests {
         let mut app = inbox();
         app.open("ed@acme.com", "18f3");
         app.back();
-        app.absorb(Done::Read(message("18f3")));
+        app.absorb(Done::Thread(thread("18f3")));
 
         assert_eq!(
             app.nav.top(),
@@ -477,7 +689,7 @@ mod tests {
                 account: "ed@acme.com".to_string()
             }
         );
-        assert!(app.message.is_none(), "nothing was forced open");
+        assert!(app.message().is_none(), "nothing was forced open");
         assert!(
             !app.mailbox.as_ref().expect("a page").row("18f3").expect("a row").unread,
             "it was read all the same"
@@ -519,7 +731,7 @@ mod tests {
                 account: "ed@acme.com".to_string()
             }
         );
-        assert!(app.message.is_none(), "nothing is left open");
+        assert!(app.message().is_none(), "nothing is left open");
         assert!(app.body.is_none());
         assert!(app.status.contains("trash"), "got {}", app.status);
     }
@@ -548,7 +760,7 @@ mod tests {
     fn back_drops_what_only_that_view_was_showing() {
         let mut app = opened("18f3");
         app.back();
-        assert!(app.message.is_none());
+        assert!(app.message().is_none());
         assert!(app.mailbox.is_some(), "the list is still loaded");
         let inbox = View::Inbox {
             account: "ed@acme.com".to_string(),
@@ -630,12 +842,12 @@ mod tests {
         };
         let mut app = PostApp::new(detail.clone());
         assert_eq!(app.nav.depth(), 1);
-        app.absorb(Done::Read(message("18f3")));
-        assert_eq!(app.message.as_ref().expect("a message").id, "18f3");
+        app.absorb(Done::Thread(thread("18f3")));
+        assert_eq!(app.message().expect("a message").id, "18f3");
 
         app.back();
         assert_eq!(app.nav.top(), &detail, "there was nowhere to go");
-        assert!(app.message.is_some(), "and nothing was dropped on the way");
+        assert!(app.message().is_some(), "and nothing was dropped on the way");
     }
 
     // --------------------------------------------------------------- paging
@@ -747,22 +959,29 @@ mod tests {
     // ------------------------------------------------------- the pane's keys
 
     /// The body pane hands the window back the chords bound to leaving a
-    /// message and to trashing it, and keeps every other key for WebKit — which
-    /// is what leaves the arrows and the page keys scrolling the body.
+    /// message, trashing it and answering it, and keeps every other key for
+    /// WebKit — which is what leaves the arrows and the page keys scrolling
+    /// the body.
     #[test]
-    fn the_pane_hands_back_exactly_the_keys_bound_to_back_and_delete() {
+    fn the_pane_hands_back_the_keys_that_act_on_the_message() {
         let keymap = keymap_of(&[
             ("Escape", Command::Back),
             ("ArrowLeft", Command::Back),
             ("ArrowDown", Command::Next),
             ("PageDown", Command::PageNext),
             ("Delete", Command::Delete),
+            ("R", Command::Reply),
             ("Ctrl+R", Command::Refresh),
             ("Ctrl+U", Command::MarkUnread),
         ]);
         assert_eq!(
             pane_keys(&keymap),
-            vec![chord("Escape"), chord("ArrowLeft"), chord("Delete")]
+            vec![
+                chord("Escape"),
+                chord("ArrowLeft"),
+                chord("Delete"),
+                chord("R")
+            ]
         );
 
         // The reader's own file is the list: rebind them and the pane follows,
@@ -775,7 +994,7 @@ mod tests {
         ]);
         assert_eq!(pane_keys(&rebound), vec![chord("Ctrl+B"), chord("Ctrl+K")]);
 
-        // A keymap that binds neither takes nothing from WebKit at all.
+        // A keymap that binds none of them takes nothing from WebKit at all.
         assert!(pane_keys(&keymap_of(&[("ArrowDown", Command::Next)])).is_empty());
     }
 
@@ -784,10 +1003,10 @@ mod tests {
     #[test]
     fn the_shipped_keymap_gives_the_pane_back_the_keys_it_needs() {
         let keys = pane_keys(&shipped_keymap());
-        for claimed in ["Escape", "Backspace", "ArrowLeft", "Delete"] {
+        for claimed in ["Escape", "Backspace", "ArrowLeft", "Delete", "R"] {
             assert!(keys.contains(&chord(claimed)), "{claimed} is not handed back");
         }
-        assert_eq!(keys.len(), 4, "and nothing else is taken from WebKit");
+        assert_eq!(keys.len(), 5, "and nothing else is taken from WebKit");
         for webkits in ["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", "Ctrl+R"] {
             assert!(!keys.contains(&chord(webkits)), "{webkits} is WebKit's");
         }
@@ -801,5 +1020,93 @@ mod tests {
         app.absorb(Done::Accounts(Vec::new()));
         assert_eq!(app.accounts.as_deref(), Some([].as_slice()));
         assert!(app.rows().is_empty());
+    }
+
+    // ---------------------------------------------------- the conversation
+
+    /// Showing a conversation reads every unread message on it, and the lines
+    /// behind it follow — including the ones that are not the one tapped.
+    #[test]
+    fn opening_a_conversation_reads_every_message_on_it() {
+        let mut app = PostApp::new(View::Inbox {
+            account: "ed@acme.com".to_string(),
+        });
+        app.absorb(Done::List(Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"account": "ed@acme.com", "messages": [
+                {"id": "18f4", "thread_id": "t", "from": "Ale", "subject": "Re: q",
+                 "date": "2025-09-12 10:33", "unread": true},
+                {"id": "18f3", "thread_id": "t", "from": "Ed", "subject": "q",
+                 "date": "2025-09-12 09:10", "unread": true},
+                {"id": "18f2", "thread_id": "other", "from": "EY", "subject": "Slides",
+                 "date": "2025-09-11 08:02", "unread": true}
+            ]}),
+        )));
+        assert_eq!(app.threads().len(), 2, "three messages, two lines");
+        assert_eq!(app.mailbox.as_ref().expect("a page").unread(), 2);
+
+        app.open("ed@acme.com", "t");
+        app.absorb(Done::Thread(crate::client::Conversation::of_answer(
+            "ed@acme.com",
+            &json!({"thread_id": "t", "subject": "Re: q", "messages": [
+                {"id": "18f3", "from": "Ed", "date": "2025-09-12 09:10", "text": "q"},
+                {"id": "18f4", "from": "Ale", "date": "2025-09-12 10:33", "text": "Re: q"}
+            ]}),
+        )));
+
+        let mailbox = app.mailbox.as_ref().expect("a page");
+        assert!(!mailbox.row("18f3").expect("a row").unread, "both were read");
+        assert!(!mailbox.row("18f4").expect("a row").unread);
+        assert!(mailbox.row("18f2").expect("a row").unread, "and only that one");
+        assert_eq!(mailbox.unread(), 1);
+        // The newest message is the one open, at the bottom of the list.
+        assert_eq!(app.message().expect("a message").id, "18f4");
+    }
+
+    /// A window opened at a message id — `enclave post read ed@… 18f4` — gets
+    /// the conversation that message is on, and does not ask for it again.
+    #[test]
+    fn a_conversation_answers_for_any_message_on_it() {
+        let mut app = PostApp::new(View::Detail {
+            account: "ed@acme.com".to_string(),
+            id: "18f4".to_string(),
+        });
+        assert!(!app.showing("18f4"), "nothing loaded yet");
+        app.absorb(Done::Thread(crate::client::Conversation::of_answer(
+            "ed@acme.com",
+            &json!({"thread_id": "t", "subject": "Re: q", "messages": [
+                {"id": "18f3", "from": "Ed", "date": "2025-09-12 09:10", "text": "q"},
+                {"id": "18f4", "from": "Ale", "date": "2025-09-12 10:33", "text": "Re: q"}
+            ]}),
+        )));
+        assert!(app.showing("18f4"), "the message asked for is on it");
+        assert!(app.showing("t"), "and so is the conversation's own id");
+        assert!(!app.showing("nope"));
+    }
+
+    /// A reply that went is a message on the conversation now: the reader lands
+    /// back on it and it is asked for again, so the reply is there to read.
+    #[test]
+    fn a_sent_reply_leaves_the_conversation_to_be_fetched_again() {
+        let mut app = opened("18f3");
+        app.goto(View::Compose {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+        });
+        app.sending = true;
+        app.absorb(Done::Sent {
+            to: "ale@acme.com".to_string(),
+        });
+
+        assert_eq!(
+            app.nav.top(),
+            &View::Detail {
+                account: "ed@acme.com".to_string(),
+                id: "18f3".to_string(),
+            }
+        );
+        assert!(app.conversation.is_none(), "so the next frame asks for it again");
+        assert!(app.asked.is_none());
+        assert!(app.status.contains("ale@acme.com"), "got {}", app.status);
     }
 }

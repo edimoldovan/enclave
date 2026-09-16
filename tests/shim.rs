@@ -58,7 +58,7 @@ fn the_shim_serves_the_handshake_and_the_enclave_without_a_window() {
     assert_eq!(replies[1]["id"], 2);
     assert_eq!(
         replies[1]["result"]["tools"].as_array().expect("tools").len(),
-        31,
+        34,
         "the whole product's tools, listed without opening anything"
     );
     // enclave_status is answered from the daemon, and there is none under this
@@ -103,9 +103,9 @@ fn only_acting_calls_need_the_server() {
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
         call("enclave_status"),
         call("enclave_computers"),
-        // Mail is a library: the shim runs all seven itself, so none of them
-        // reaches for a server — and neither does the window, which the shim
-        // opens down Post's own socket.
+        // Mail is a library: the shim runs every free verb itself, so none of
+        // them reaches for a server — and neither does the window, which the
+        // shim opens down Post's own socket.
         call("post_show"),
         call("post_accounts"),
         call("post_add_account"),
@@ -114,6 +114,8 @@ fn only_acting_calls_need_the_server() {
         call("post_mark"),
         call("post_delete"),
         call("post_attachment"),
+        // Writing a reply down is free too: nothing has left this computer.
+        call("post_draft"),
     ] {
         assert!(
             !enclave::mcp::proto::needs_server(&kept),
@@ -126,6 +128,9 @@ fn only_acting_calls_need_the_server() {
         call("grido_range_read"),
         call("grido_cell_set"),
         call("grido_rows_delete"),
+        // Sending mail is the one mail verb that goes to the server, because
+        // the server is the process that can ask the user first.
+        call("post_send"),
     ] {
         assert!(
             enclave::mcp::proto::needs_server(&forwarded),

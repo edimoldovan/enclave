@@ -37,16 +37,26 @@ fn every_message_survives_the_round_trip() {
             id: Some(1),
             account: Some("ed@acme.com".to_string()),
             message: Some("18f3a2c9b1".to_string()),
+            compose: false,
         },
         Msg::View {
             id: Some(2),
             account: Some("ed@acme.com".to_string()),
             message: None,
+            compose: false,
         },
         Msg::View {
             id: None,
             account: None,
             message: None,
+            compose: false,
+        },
+        // A reply to that message, rather than the message.
+        Msg::View {
+            id: Some(4),
+            account: Some("ed@acme.com".to_string()),
+            message: Some("18f3a2c9b1".to_string()),
+            compose: true,
         },
         Msg::Call {
             id: 3,

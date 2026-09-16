@@ -34,8 +34,10 @@ pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Enclave")
-            .with_inner_size([460.0, 220.0])
-            .with_resizable(false)
+            // Room for a whole reply: what is under the sentence can be a
+            // message, and a message nobody can read is not a question.
+            .with_inner_size([520.0, 380.0])
+            .with_resizable(true)
             .with_decorations(true)
             .with_always_on_top(),
         ..Default::default()
@@ -127,13 +129,34 @@ impl eframe::App for Dialog {
             ui.label(egui::RichText::new("Allow this?").strong());
             ui.add_space(6.0);
             ui.label(egui::RichText::new(&self.request.sentence).size(15.0));
+            ui.add_space(6.0);
+            // The buttons and the checkbox are laid out from the bottom first,
+            // so what is being approved can have every point that is left —
+            // a reply is a whole message, not a line of arguments.
+            let footer = if self.request.always_label.is_empty() {
+                46.0
+            } else {
+                72.0
+            };
+            let room = (ui.available_height() - footer).max(40.0);
             if !self.request.args.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(&self.request.args).weak().size(11.0));
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(room)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(&self.request.args).size(12.5));
+                        });
+                });
             }
-            ui.add_space(10.0);
-            ui.checkbox(&mut self.always, &self.request.always_label);
-            ui.add_space(10.0);
+            ui.add_space(8.0);
+            // A tool that may never be allowed for good has no checkbox: there
+            // is nothing to tick, and offering one would be a lie.
+            if !self.request.always_label.is_empty() {
+                ui.checkbox(&mut self.always, &self.request.always_label);
+                ui.add_space(10.0);
+            }
             ui.horizontal(|ui| {
                 if ui.button("Deny").clicked() {
                     decision = Some(Decision::Deny);

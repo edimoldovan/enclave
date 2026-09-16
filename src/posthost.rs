@@ -193,11 +193,12 @@ fn hand_off(path: &Path, view: &View) -> bool {
     let Ok(mut stream) = UnixStream::connect(path) else {
         return false;
     };
-    let (account, message) = parts(view);
+    let (account, message, compose) = parts(view);
     let msg = Msg::View {
         id: Some(1),
         account,
         message,
+        compose,
     };
     if ipc::send(&mut stream, &msg).is_err() {
         return false;
@@ -237,8 +238,9 @@ fn answer(stream: UnixStream, tx: &Sender<View>) -> std::io::Result<()> {
                 id,
                 account,
                 message,
+                compose,
             } => {
-                let landed = tx.send(view_of(account, message)).is_ok();
+                let landed = tx.send(view_of(account, message, compose)).is_ok();
                 wake();
                 (
                     id,
@@ -266,19 +268,23 @@ fn request_id(msg: &Msg) -> Option<u64> {
     }
 }
 
-/// A view as the two fields that travel on the socket.
-pub fn parts(view: &View) -> (Option<String>, Option<String>) {
-    (
-        view.account().map(str::to_owned),
-        view.message().map(str::to_owned),
-    )
+/// A view as the three fields that travel on the socket.
+pub fn parts(view: &View) -> (Option<String>, Option<String>, bool) {
+    match view {
+        View::Accounts => (None, None, false),
+        View::Inbox { account } => (Some(account.clone()), None, false),
+        View::Detail { account, id } => (Some(account.clone()), Some(id.clone()), false),
+        View::Compose { account, id } => (Some(account.clone()), Some(id.clone()), true),
+    }
 }
 
 /// And back: no account is the account list, an account is that account's mail,
-/// an account and a message is that message. A message with no account to read
-/// it from is neither, so it is the account list.
-pub fn view_of(account: Option<String>, message: Option<String>) -> View {
+/// an account and a message is that message — and that message being composed
+/// to is a reply to it. A message with no account to read it from is none of
+/// them, so it is the account list.
+pub fn view_of(account: Option<String>, message: Option<String>, compose: bool) -> View {
     match (account, message) {
+        (Some(account), Some(id)) if compose => View::Compose { account, id },
         (Some(account), Some(id)) => View::Detail { account, id },
         (Some(account), None) => View::Inbox { account },
         (None, _) => View::Accounts,

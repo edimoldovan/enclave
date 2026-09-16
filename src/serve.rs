@@ -132,6 +132,12 @@ impl Server {
         if name.starts_with(crate::mcp::tools::PREFIX) {
             return crate::mcp::tools::call(name, &args);
         }
+        // Mail is files on disk and has no window to forward to, so it is
+        // answered here — but only after the gate above: the shim sends the
+        // one mail verb that acts to this process precisely for that.
+        if name.starts_with(crate::mcp::tools::POST_PREFIX) {
+            return crate::mcp::tools::post_call(name, &args);
+        }
         if name.starts_with(grido::mcp::tools::PREFIX) {
             let host = self.ensure_host(GRIDO)?;
             let tool = name.to_string();

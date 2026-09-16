@@ -13,6 +13,7 @@ impl PostApp {
             View::Accounts => self.accounts_view(ctx),
             View::Inbox { account } => self.inbox_view(ctx, &account),
             View::Detail { account, id } => self.detail_view(ctx, frame, &account, &id),
+            View::Compose { account, .. } => self.compose_view(ctx, &account),
         }
     }
 
@@ -25,6 +26,7 @@ impl PostApp {
                 None => account.clone(),
             },
             View::Detail { account, .. } => account.clone(),
+            View::Compose { account, .. } => format!("{account} — replying"),
         };
         let status = self.status.clone();
         TopBottomPanel::bottom("post-status").show(ctx, |ui| {

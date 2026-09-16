@@ -29,6 +29,10 @@ pub enum Command {
     Delete,
     /// Put the unread flag back on the message on screen.
     MarkUnread,
+    /// Write a reply to the message on screen.
+    Reply,
+    /// Send the reply being written.
+    Send,
     /// Connect a Gmail account through Google's own consent screen.
     AddAccount,
     /// The shortcut viewer.
@@ -52,6 +56,8 @@ impl Command {
             "last" => Last,
             "delete" => Delete,
             "mark_unread" => MarkUnread,
+            "reply" => Reply,
+            "send" => Send,
             "add_account" => AddAccount,
             "shortcut_help" => ShortcutHelp,
             "quit" => Quit,
@@ -74,6 +80,8 @@ impl Command {
             Last => "End of the list",
             Delete => "Delete",
             MarkUnread => "Mark unread",
+            Reply => "Reply",
+            Send => "Send reply",
             AddAccount => "Add account",
             ShortcutHelp => "Keyboard shortcuts",
             Quit => "Close window",
@@ -81,7 +89,7 @@ impl Command {
     }
 
     /// Every command there is, in the order the shortcut viewer lists them.
-    pub const ALL: [Command; 14] = [
+    pub const ALL: [Command; 16] = [
         Command::Back,
         Command::Accounts,
         Command::Refresh,
@@ -93,6 +101,8 @@ impl Command {
         Command::Last,
         Command::Delete,
         Command::MarkUnread,
+        Command::Reply,
+        Command::Send,
         Command::AddAccount,
         Command::ShortcutHelp,
         Command::Quit,
@@ -113,6 +123,8 @@ impl Command {
             Last => "last",
             Delete => "delete",
             MarkUnread => "mark_unread",
+            Reply => "reply",
+            Send => "send",
             AddAccount => "add_account",
             ShortcutHelp => "shortcut_help",
             Quit => "quit",
@@ -166,7 +178,9 @@ mod tests {
         for id in &bound {
             assert!(Command::from_id(id).is_some(), "no command called \"{id}\"");
         }
-        for needed in ["back", "refresh", "delete", "open", "accounts", "shortcut_help"] {
+        for needed in [
+            "back", "refresh", "delete", "open", "accounts", "shortcut_help", "reply", "send",
+        ] {
             assert!(bound.contains(&needed), "nothing is bound to {needed}");
         }
     }

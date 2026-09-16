@@ -277,6 +277,32 @@ fn tidy(text: &str) -> String {
 /// be possible by accident.
 pub const MAX_TEXT: usize = 20_000;
 
+/// A body with the quoted message under it taken off — every line behind `>`,
+/// and the attribution line that introduced them.
+///
+/// In a conversation the quote is the message above it, already on screen:
+/// printing it again once per reply is the same words five times over.
+pub fn unquote(text: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with('>') {
+            // "On <date>, <someone> wrote:" belongs to the quote it opens.
+            while lines
+                .last()
+                .is_some_and(|last| last.trim().is_empty() || last.trim_end().ends_with("wrote:"))
+            {
+                lines.pop();
+            }
+            continue;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n").trim_end().to_string()
+}
+
 /// Caps a body, saying so where it was cut.
 pub fn cap(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -529,5 +555,27 @@ mod tests {
         // A leap day, and the year boundary.
         assert_eq!(stamp(1_709_208_000_000), "2024-02-29 12:00");
         assert_eq!(stamp(1_735_689_599_000), "2024-12-31 23:59");
+    }
+
+    /// A reply in a conversation carries the message above it quoted under it.
+    /// The conversation already shows that message, so the quote comes off.
+    #[test]
+    fn a_quote_comes_off_a_message_in_a_conversation() {
+        let reply = "Looks good — send it.\n\n\
+                     On 2025-09-12 10:33, Ale <ale@acme.com> wrote:\n\
+                     > Can you send the quote?\n\
+                     > /Ale";
+        assert_eq!(unquote(reply), "Looks good — send it.");
+
+        // Nothing quoted is nothing to take off.
+        assert_eq!(unquote("Just this."), "Just this.");
+        assert_eq!(unquote(""), "");
+        // A message that is only a quote says nothing of its own.
+        assert_eq!(unquote("> everything\n> he said"), "");
+        // And the words after a quote are still the sender's own.
+        assert_eq!(
+            unquote("Above.\n> quoted\nBelow."),
+            "Above.\nBelow."
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! interface, so they can be worked on independently.
 
 pub mod accounts;
+pub mod compose;
 pub mod detail;
 pub mod icons;
 pub mod inbox;

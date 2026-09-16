@@ -2,10 +2,11 @@
 //!
 //! Everything above this line works in plain types — [`Mailbox`], [`Row`],
 //! [`Message`] — and never sees a `serde_json::Value`, exactly as Grido's UI
-//! never sees IronCalc. What the window runs are the same seven verbs the
-//! assistant and the terminal run: one palette, one implementation, so a
-//! message deleted from a row and a message deleted from a script are the same
-//! call.
+//! never sees IronCalc. What the window runs are the same verbs the assistant
+//! and the terminal run: one palette, one implementation, so a message deleted
+//! from a row and a message deleted from a script are the same call — and a
+//! reply sent from the editor is the same call as a reply the assistant sends,
+//! minus the dialog, because the key press that sent it was the consent.
 //!
 //! Mail is on the network and the window is not allowed to stop for it, so a
 //! job runs on a thread of its own and its answer comes back down a channel.
@@ -20,10 +21,61 @@ use serde_json::{json, Value};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
+    /// The conversation this message is on. Empty where the provider did not
+    /// say, in which case the message is a conversation of its own.
+    pub thread_id: String,
     pub from: String,
+    /// Who it went to, as the header wrote it — what a conversation of this
+    /// account's own is named by, since its sender is the reader.
+    pub to: String,
     pub subject: String,
     pub date: String,
     pub unread: bool,
+    /// True where this account wrote it. The provider's own flag: an alias
+    /// sends under another address, which no From line would give away.
+    pub sent: bool,
+}
+
+impl Row {
+    /// Which conversation this row belongs to: the thread the provider named,
+    /// or the message itself where it named none.
+    pub fn conversation(&self) -> &str {
+        if self.thread_id.is_empty() {
+            &self.id
+        } else {
+            &self.thread_id
+        }
+    }
+
+    /// Whether the reader wrote this one: the provider said so, or the From
+    /// line is the account itself.
+    pub fn mine(&self, account: &str) -> bool {
+        let account = account.trim();
+        self.sent
+            || (!account.is_empty()
+                && self.from.to_lowercase().contains(&account.to_lowercase()))
+    }
+}
+
+/// One conversation's line in the inbox: the newest message on it, the subject
+/// they share, and how many there are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thread {
+    /// The conversation's id — what `post_thread` is asked for.
+    pub id: String,
+    /// The newest message on it: who it is from and when it arrived.
+    pub latest: Row,
+    /// Whose conversation this is, as the line names it: the newest message on
+    /// it the reader did not write — or, on one only the reader wrote, where
+    /// it went.
+    pub who: String,
+    pub subject: String,
+    /// True when any message on it is unread: a conversation with something
+    /// new in it is new.
+    pub unread: bool,
+    pub count: usize,
+    /// Every message on it, newest first — what a trashed row amends.
+    pub ids: Vec<String>,
 }
 
 /// One page of one account's mail.
@@ -31,6 +83,11 @@ pub struct Row {
 pub struct Mailbox {
     pub account: String,
     pub rows: Vec<Row>,
+    /// The rows as conversations, newest first — what the inbox draws. Kept
+    /// beside the rows rather than instead of them: the page on disk is a page
+    /// of messages, and a message marked or trashed is still amended by its own
+    /// id. Rebuilt by [`Mailbox::regroup`] whenever the rows change.
+    pub threads: Vec<Thread>,
     /// True when this page came off the disk rather than off the wire — the
     /// mail library hands the last one over at once and refreshes behind it,
     /// so a fresher page is on its way down [`Jobs::drain`].
@@ -48,20 +105,23 @@ impl Mailbox {
             .and_then(Value::as_array)
             .map(|rows| rows.iter().map(row_of).collect())
             .unwrap_or_default();
-        Mailbox {
+        let mut mailbox = Mailbox {
             account: answer
                 .get("account")
                 .and_then(Value::as_str)
                 .unwrap_or(account)
                 .to_string(),
             rows,
+            threads: Vec::new(),
             cached: answer.get("cached").and_then(Value::as_bool) == Some(true),
             next_page: answer
                 .get("next_page")
                 .and_then(Value::as_str)
                 .filter(|token| !token.trim().is_empty())
                 .map(str::to_owned),
-        }
+        };
+        mailbox.regroup();
+        mailbox
     }
 
     pub fn row(&self, id: &str) -> Option<&Row> {
@@ -73,17 +133,23 @@ impl Mailbox {
     pub fn set_unread(&mut self, id: &str, unread: bool) {
         if let Some(row) = self.rows.iter_mut().find(|row| row.id == id) {
             row.unread = unread;
+            self.regroup();
         }
     }
 
     /// Drops one row, after it has gone to the trash.
     pub fn remove(&mut self, id: &str) {
         self.rows.retain(|row| row.id != id);
+        self.regroup();
     }
 
     /// Adds the page after this one to the end of it, and takes on where the
     /// mailbox now continues. Rows already here are not added twice — a page
     /// boundary can shift under a mailbox that took a new message meanwhile.
+    ///
+    /// The page is appended and the whole list regrouped: a later page can
+    /// carry an older message of a conversation already on screen, which is a
+    /// higher count on a line that is already there rather than a second line.
     pub fn append(&mut self, more: Mailbox) {
         for row in more.rows {
             if !self.rows.iter().any(|have| have.id == row.id) {
@@ -91,11 +157,70 @@ impl Mailbox {
             }
         }
         self.next_page = more.next_page;
+        self.regroup();
     }
 
-    /// How many rows are still unread — the count on the account row.
+    /// The rows as conversations: one line per thread, in the order the
+    /// mailbox lists them, carrying the newest message on it.
+    ///
+    /// The rows arrive newest first, so the first row of a conversation is its
+    /// newest one — that is the line, and its place in the list is the
+    /// conversation's place.
+    pub fn regroup(&mut self) {
+        let mut threads: Vec<Thread> = Vec::new();
+        for row in &self.rows {
+            let id = row.conversation().to_string();
+            match threads.iter_mut().find(|thread| thread.id == id) {
+                Some(thread) => {
+                    thread.count += 1;
+                    thread.unread |= row.unread;
+                    thread.ids.push(row.id.clone());
+                }
+                None => threads.push(Thread {
+                    id,
+                    who: String::new(),
+                    subject: row.subject.clone(),
+                    unread: row.unread,
+                    count: 1,
+                    ids: vec![row.id.clone()],
+                    latest: row.clone(),
+                }),
+            }
+        }
+        for thread in &mut threads {
+            thread.who = self.naming(thread);
+        }
+        self.threads = threads;
+    }
+
+    /// What one conversation's line is named by: the newest message on it
+    /// somebody else wrote. A conversation of the reader's own — a reply he
+    /// sent, and nothing back yet — is named by where it went instead, because
+    /// naming it after himself says nothing.
+    fn naming(&self, thread: &Thread) -> String {
+        let theirs = self
+            .rows
+            .iter()
+            .filter(|row| row.conversation() == thread.id)
+            .find(|row| !row.mine(&self.account));
+        match theirs {
+            Some(row) => row.from.clone(),
+            None if !thread.latest.to.trim().is_empty() => {
+                format!("To {}", thread.latest.to.trim())
+            }
+            None => thread.latest.from.clone(),
+        }
+    }
+
+    /// One conversation of this page, by its id.
+    pub fn thread(&self, id: &str) -> Option<&Thread> {
+        self.threads.iter().find(|thread| thread.id == id)
+    }
+
+    /// How many conversations have something unread on them — the count on the
+    /// account row.
     pub fn unread(&self) -> usize {
-        self.rows.iter().filter(|row| row.unread).count()
+        self.threads.iter().filter(|thread| thread.unread).count()
     }
 }
 
@@ -113,10 +238,13 @@ pub struct Message {
     /// The saved HTML body, written by the mail library under the state dir.
     pub html_path: Option<String>,
     pub attachments: Vec<String>,
+    /// True where this message was still unread when the conversation was
+    /// opened — what puts weight on its line.
+    pub unread: bool,
 }
 
 impl Message {
-    /// A `post_read` answer as a message.
+    /// A `post_read` or `post_thread` answer as a message.
     pub fn of_answer(account: &str, answer: &Value) -> Message {
         let text = |key: &str| {
             answer
@@ -147,6 +275,161 @@ impl Message {
                         .collect()
                 })
                 .unwrap_or_default(),
+            unread: answer.get("unread").and_then(Value::as_bool) == Some(true),
+        }
+    }
+}
+
+/// One conversation, as the detail view shows it: every message on it, oldest
+/// first, with one of them open.
+///
+/// The keyboard walks the messages and Enter opens the one it is on; opening
+/// one closes whatever was open, so the pane below always has exactly the
+/// message on screen to draw — or nothing, with everything collapsed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Conversation {
+    pub account: String,
+    pub id: String,
+    pub subject: String,
+    /// Oldest first, newest at the bottom — the order a conversation reads in.
+    pub messages: Vec<Message>,
+    /// Which message the keyboard is on.
+    pub focus: usize,
+    /// Which message is open, if any. The newest one, on arrival.
+    pub open: Option<usize>,
+}
+
+impl Conversation {
+    /// A `post_thread` answer as a conversation, opened at its newest message.
+    pub fn of_answer(account: &str, answer: &Value) -> Conversation {
+        let messages: Vec<Message> = answer
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .map(|message| Message::of_answer(account, message))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let newest = messages.len().saturating_sub(1);
+        Conversation {
+            account: account.to_string(),
+            id: answer
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            subject: answer
+                .get("subject")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            focus: newest,
+            open: (!messages.is_empty()).then_some(newest),
+            messages,
+        }
+    }
+
+    /// The message the keyboard is on.
+    pub fn focused(&self) -> Option<&Message> {
+        self.messages.get(self.focus)
+    }
+
+    /// The message that is open, whose body is on screen.
+    pub fn opened(&self) -> Option<&Message> {
+        self.messages.get(self.open?)
+    }
+
+    /// The newest message — what Reply answers.
+    pub fn newest(&self) -> Option<&Message> {
+        self.messages.last()
+    }
+
+    /// Moves the keyboard by `by` messages, stopping at either end. True when
+    /// it moved, so the list knows to scroll after it.
+    pub fn step(&mut self, by: i32) -> bool {
+        if self.messages.is_empty() {
+            return false;
+        }
+        let last = self.messages.len() as i32 - 1;
+        let next = (self.focus as i32 + by).clamp(0, last) as usize;
+        if next == self.focus {
+            return false;
+        }
+        self.focus = next;
+        true
+    }
+
+    /// Enter: opens the message the keyboard is on, or closes it when it is
+    /// already the open one. Only ever one is open.
+    pub fn toggle(&mut self) {
+        if self.messages.is_empty() {
+            return;
+        }
+        self.open = match self.open {
+            Some(open) if open == self.focus => None,
+            _ => Some(self.focus),
+        };
+    }
+
+    /// Drops one message, after it has gone to the trash, and keeps the
+    /// keyboard and the open message on something that is still here.
+    pub fn remove(&mut self, id: &str) {
+        let Some(at) = self.messages.iter().position(|m| m.id == id) else {
+            return;
+        };
+        self.messages.remove(at);
+        if self.messages.is_empty() {
+            self.focus = 0;
+            self.open = None;
+            return;
+        }
+        let last = self.messages.len() - 1;
+        self.focus = self.focus.min(last);
+        self.open = match self.open {
+            Some(open) if open == at => Some(self.focus),
+            Some(open) if open > at => Some(open - 1),
+            other => other,
+        };
+    }
+}
+
+/// A reply, written and not yet sent — what the compose view puts above the
+/// editor. The body is not here: the editor owns it until it is sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Draft {
+    pub id: String,
+    /// Who it goes to and who is copied, comma separated as the fields show
+    /// them. A reply answers everybody, and both lines are the reader's.
+    pub to: String,
+    pub cc: String,
+    pub subject: String,
+    /// "On <date>, <sender> wrote:" — the line above the quote, as the mail
+    /// library wrote it into the reply.
+    pub attribution: String,
+    /// The message being answered, as its own text: what the compose view
+    /// shows under the editor, unquoted and not editable. The sent body
+    /// carries the same words behind `> `.
+    pub quote: String,
+}
+
+impl Draft {
+    /// A `post_draft` answer as the header of the reply being written.
+    pub fn of_answer(answer: &Value) -> Draft {
+        let text = |key: &str| {
+            answer
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        Draft {
+            id: text("draft_id"),
+            to: text("to"),
+            cc: text("cc"),
+            subject: text("subject"),
+            attribution: text("attribution"),
+            quote: text("original_text"),
         }
     }
 }
@@ -160,10 +443,13 @@ fn row_of(row: &Value) -> Row {
     };
     Row {
         id: text("id"),
+        thread_id: text("thread_id"),
         from: text("from"),
+        to: text("to"),
         subject: text("subject"),
         date: text("date"),
         unread: row.get("unread").and_then(Value::as_bool) == Some(true),
+        sent: row.get("sent").and_then(Value::as_bool) == Some(true),
     }
 }
 
@@ -187,9 +473,29 @@ pub enum Job {
     /// One page of a mailbox. `page` is a token from the page before it, which
     /// makes this an append rather than the mailbox itself.
     List { account: String, page: Option<String> },
-    Read { account: String, id: String },
+    /// One conversation, every message on it. `id` is the thread's, and a
+    /// message id works too — a window opened at `enclave post read <email>
+    /// <id>` has one of those and nothing else.
+    Thread { account: String, id: String },
     Mark { account: String, id: String, read: bool },
     Delete { account: String, id: String },
+    /// Write the reply to one message down. Free, and nothing is sent: the
+    /// window drafts once with nothing in it to read the headers off, and
+    /// again with what was typed when the reader sends.
+    ///
+    /// `to` and `cc` are the fields as they stand when Send is pressed. The
+    /// first draft leaves them out, which is what fills them in: the reply-all
+    /// off the message being answered.
+    Draft {
+        account: String,
+        id: String,
+        body: String,
+        to: Option<String>,
+        cc: Option<String>,
+    },
+    /// Send a draft already written. No dialog on this road: the click or the
+    /// key press that got here *is* the consent.
+    Send { account: String, draft_id: String },
     AddAccount,
 }
 
@@ -202,9 +508,11 @@ impl Job {
                 Some(_) => "Fetching more…".to_string(),
                 None => format!("Fetching {account}…"),
             },
-            Job::Read { .. } => "Opening the message…".to_string(),
+            Job::Thread { .. } => "Opening the conversation…".to_string(),
             Job::Mark { .. } => "Marking…".to_string(),
             Job::Delete { .. } => "Moving to the trash…".to_string(),
+            Job::Draft { .. } => "Preparing the reply…".to_string(),
+            Job::Send { .. } => "Sending…".to_string(),
             Job::AddAccount => {
                 "Waiting for Google's sign-in in your browser…".to_string()
             }
@@ -220,12 +528,29 @@ impl Job {
                 Some(page) => ("post_list", json!({"email": account, "page": page})),
                 None => ("post_list", json!({ "email": account })),
             },
-            Job::Read { account, id } => ("post_read", json!({"email": account, "id": id})),
+            Job::Thread { account, id } => (
+                "post_thread",
+                json!({"email": account, "thread_id": id}),
+            ),
             Job::Mark { account, id, read } => (
                 "post_mark",
                 json!({"email": account, "id": id, "read": read}),
             ),
             Job::Delete { account, id } => ("post_delete", json!({"email": account, "id": id})),
+            Job::Draft { account, id, body, to, cc } => {
+                let mut args = json!({"email": account, "id": id, "body": body});
+                if let Some(to) = to {
+                    args["to"] = json!(to);
+                }
+                if let Some(cc) = cc {
+                    args["cc"] = json!(cc);
+                }
+                ("post_draft", args)
+            }
+            Job::Send { account, draft_id } => (
+                "post_send",
+                json!({"email": account, "draft_id": draft_id}),
+            ),
             Job::AddAccount => ("post_add_account", json!({})),
         }
     }
@@ -264,9 +589,19 @@ impl Job {
                     None => Done::List(mailbox),
                 }
             }
-            Job::Read { account, .. } => Done::Read(Message::of_answer(&account, answer)),
+            Job::Thread { account, .. } => {
+                Done::Thread(Conversation::of_answer(&account, answer))
+            }
             Job::Mark { id, read, .. } => Done::Marked { id, read },
             Job::Delete { id, .. } => Done::Deleted { id },
+            Job::Draft { .. } => Done::Drafted(Draft::of_answer(answer)),
+            Job::Send { .. } => Done::Sent {
+                to: answer
+                    .get("to")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            },
             Job::AddAccount => Done::Added(
                 answer
                     .get("email")
@@ -285,9 +620,14 @@ pub enum Done {
     List(Mailbox),
     /// The page after the one on screen, to go on the end of it.
     More(Mailbox),
-    Read(Message),
+    /// The conversation on screen, with its newest message open.
+    Thread(Conversation),
     Marked { id: String, read: bool },
     Deleted { id: String },
+    /// The reply as it now stands, addressed and threaded.
+    Drafted(Draft),
+    /// It left. Nothing comes back to read: the mailbox has it now.
+    Sent { to: String },
     Added(String),
     Failed { about: String, error: String },
 }
@@ -386,10 +726,10 @@ mod tests {
         json!({
             "account": "ed@acme.com",
             "messages": [
-                {"id": "18f3", "from": "Ale <ale@acme.com>", "subject": "Re: the quote",
-                 "date": "2025-09-12 10:33", "unread": true},
-                {"id": "18f2", "from": "EY <cristiano@ey.com>", "subject": "Slides",
-                 "date": "2025-09-11 08:02", "unread": false}
+                {"id": "18f3", "thread_id": "t-quote", "from": "Ale <ale@acme.com>",
+                 "subject": "Re: the quote", "date": "2025-09-12 10:33", "unread": true},
+                {"id": "18f2", "thread_id": "t-slides", "from": "EY <cristiano@ey.com>",
+                 "subject": "Slides", "date": "2025-09-11 08:02", "unread": false}
             ],
             "next_page": "tok3n"
         })
@@ -511,9 +851,9 @@ mod tests {
                 account: "ed@acme.com".to_string(),
                 page: Some("tok3n".to_string()),
             },
-            Job::Read {
+            Job::Thread {
                 account: "ed@acme.com".to_string(),
-                id: "18f3".to_string(),
+                id: "t-quote".to_string(),
             },
             Job::Mark {
                 account: "ed@acme.com".to_string(),
@@ -523,6 +863,17 @@ mod tests {
             Job::Delete {
                 account: "ed@acme.com".to_string(),
                 id: "18f3".to_string(),
+            },
+            Job::Draft {
+                account: "ed@acme.com".to_string(),
+                id: "18f3".to_string(),
+                body: "Looks good.".to_string(),
+                to: None,
+                cc: None,
+            },
+            Job::Send {
+                account: "ed@acme.com".to_string(),
+                draft_id: "reply-18f3".to_string(),
             },
             Job::AddAccount,
         ];
@@ -598,6 +949,83 @@ mod tests {
         assert_eq!(added, Done::Added("ed@acme.com".to_string()));
     }
 
+    /// A reply written and a reply sent: the first comes back addressed, the
+    /// second comes back as where it went and nothing more.
+    #[test]
+    fn a_reply_comes_back_addressed_and_then_gone() {
+        let drafted = Job::Draft {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+            body: "Looks good.".to_string(),
+            to: None,
+            cc: None,
+        }
+        .answered(&json!({
+            "draft_id": "reply-18f3",
+            "account": "ed@acme.com",
+            "to": "ale@acme.com",
+            "cc": "cm@ey.com, fredrik@norberg.se",
+            "subject": "Re: the quote",
+            "body": "Looks good.\n\nOn 2025-09-12 10:33, Ale <ale@acme.com> wrote:\n> Send it?",
+            "attribution": "On 2025-09-12 10:33, Ale <ale@acme.com> wrote:",
+            "original_text": "Send it?",
+            "sent": false,
+        }));
+        assert_eq!(
+            drafted,
+            Done::Drafted(Draft {
+                id: "reply-18f3".to_string(),
+                to: "ale@acme.com".to_string(),
+                cc: "cm@ey.com, fredrik@norberg.se".to_string(),
+                subject: "Re: the quote".to_string(),
+                attribution: "On 2025-09-12 10:33, Ale <ale@acme.com> wrote:".to_string(),
+                quote: "Send it?".to_string(),
+            })
+        );
+
+        let sent = Job::Send {
+            account: "ed@acme.com".to_string(),
+            draft_id: "reply-18f3".to_string(),
+        }
+        .answered(&json!({"to": "ale@acme.com", "id": "18f4", "sent": true}));
+        assert_eq!(
+            sent,
+            Done::Sent {
+                to: "ale@acme.com".to_string()
+            }
+        );
+
+        // An answer with nothing in it is not a panic.
+        assert_eq!(Draft::of_answer(&json!({})), Draft::default());
+    }
+
+    /// The first draft asks for nothing but the headers; the one on the way out
+    /// carries the fields as the reader left them, an emptied Cc included.
+    #[test]
+    fn the_address_fields_travel_with_the_draft() {
+        let (_, opening) = Job::Draft {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+            body: String::new(),
+            to: None,
+            cc: None,
+        }
+        .verb();
+        assert!(opening.get("to").is_none() && opening.get("cc").is_none());
+
+        let (tool, sending) = Job::Draft {
+            account: "ed@acme.com".to_string(),
+            id: "18f3".to_string(),
+            body: "Looks good.".to_string(),
+            to: Some("ale@acme.com, cm@ey.com".to_string()),
+            cc: Some(String::new()),
+        }
+        .verb();
+        assert_eq!(tool, "post_draft");
+        assert_eq!(sending["to"], "ale@acme.com, cm@ey.com");
+        assert_eq!(sending["cc"], "");
+    }
+
     /// A job with nothing to do still comes back, so the window never waits
     /// forever on a thread that has already finished.
     #[test]
@@ -618,5 +1046,233 @@ mod tests {
         assert_eq!(answers.len(), 1, "the answer came back");
         assert!(matches!(answers[0], Done::Accounts(_)));
         assert!(!jobs.busy());
+    }
+
+    // ---------------------------------------------------- grouping the page
+
+    /// A page of messages as conversations: one line per thread, the newest
+    /// message on it is the line, unread if anything on it is unread, and the
+    /// count is how many messages it gathered.
+    #[test]
+    fn a_page_of_messages_is_a_list_of_conversations() {
+        let mailbox = Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({
+                "account": "ed@acme.com",
+                "messages": [
+                    {"id": "18f4", "thread_id": "t-quote", "from": "Ale <ale@acme.com>",
+                     "subject": "Re: the quote", "date": "2025-09-12 10:33", "unread": true},
+                    {"id": "18f3", "thread_id": "t-quote", "from": "Ed <ed@acme.com>",
+                     "subject": "Re: the quote", "date": "2025-09-12 09:10", "unread": false},
+                    {"id": "18f2", "thread_id": "t-slides", "from": "EY <cristiano@ey.com>",
+                     "subject": "Slides", "date": "2025-09-11 08:02", "unread": false},
+                    {"id": "18f1", "thread_id": "t-quote", "from": "Ale <ale@acme.com>",
+                     "subject": "The quote", "date": "2025-09-10 19:20", "unread": false}
+                ]
+            }),
+        );
+        assert_eq!(mailbox.rows.len(), 4, "the messages are all still here");
+        let ids: Vec<&str> = mailbox.threads.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["t-quote", "t-slides"], "newest conversation first");
+
+        let quote = mailbox.thread("t-quote").expect("a conversation");
+        assert_eq!(quote.count, 3);
+        assert_eq!(quote.latest.id, "18f4", "the newest message is the line");
+        assert_eq!(quote.latest.date, "2025-09-12 10:33");
+        assert_eq!(quote.subject, "Re: the quote", "and its subject is the line's");
+        assert!(quote.unread, "one unread message makes the conversation unread");
+        assert_eq!(quote.ids, vec!["18f4", "18f3", "18f1"], "newest first");
+
+        let slides = mailbox.thread("t-slides").expect("a conversation");
+        assert_eq!(slides.count, 1);
+        assert!(!slides.unread);
+
+        // The account row counts conversations with something new on them, not
+        // messages: three of these four rows are one line.
+        assert_eq!(mailbox.unread(), 1);
+    }
+
+    /// A message the provider filed under no thread is a conversation of one,
+    /// addressed by its own id.
+    #[test]
+    fn a_message_with_no_thread_is_a_conversation_of_its_own() {
+        let mailbox = Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"messages": [
+                {"id": "18f3", "from": "Ale <ale@acme.com>", "subject": "Hi",
+                 "date": "2025-09-12 10:33", "unread": true}
+            ]}),
+        );
+        assert_eq!(mailbox.threads.len(), 1);
+        assert_eq!(mailbox.threads[0].id, "18f3");
+        assert_eq!(mailbox.threads[0].count, 1);
+    }
+
+    /// Reading one message of a conversation leaves the conversation read only
+    /// once nothing on it is unread, and a trashed message leaves the line —
+    /// taking the whole line with it when it was the last one.
+    #[test]
+    fn a_conversations_weight_follows_its_messages() {
+        let mut mailbox = Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"messages": [
+                {"id": "18f4", "thread_id": "t", "from": "Ale", "subject": "Re: q",
+                 "date": "2025-09-12 10:33", "unread": true},
+                {"id": "18f3", "thread_id": "t", "from": "Ed", "subject": "q",
+                 "date": "2025-09-12 09:10", "unread": true}
+            ]}),
+        );
+        assert_eq!(mailbox.unread(), 1);
+
+        mailbox.set_unread("18f4", false);
+        assert!(mailbox.threads[0].unread, "the older one is still unread");
+
+        mailbox.set_unread("18f3", false);
+        assert!(!mailbox.threads[0].unread, "and now nothing on it is");
+
+        mailbox.remove("18f4");
+        assert_eq!(mailbox.threads.len(), 1, "the conversation is still there");
+        assert_eq!(mailbox.threads[0].count, 1);
+        assert_eq!(mailbox.threads[0].latest.id, "18f3", "what is left is the line");
+
+        mailbox.remove("18f3");
+        assert!(mailbox.threads.is_empty(), "and with nothing on it, it is gone");
+    }
+
+    /// A later page carrying an older message of a conversation already on
+    /// screen is a higher count on that line, not a second line.
+    #[test]
+    fn a_later_page_joins_the_conversations_already_listed() {
+        let mut mailbox = Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"account": "ed@acme.com", "messages": [
+                {"id": "18f4", "thread_id": "t-quote", "from": "Ale", "subject": "Re: q",
+                 "date": "2025-09-12 10:33", "unread": false}
+            ]}),
+        );
+        assert_eq!(mailbox.threads.len(), 1);
+        assert_eq!(mailbox.threads[0].count, 1);
+
+        mailbox.append(Mailbox::of_answer(
+            "ed@acme.com",
+            &json!({"account": "ed@acme.com", "messages": [
+                {"id": "18f1", "thread_id": "t-quote", "from": "Ale", "subject": "q",
+                 "date": "2025-09-10 19:20", "unread": true},
+                {"id": "18f0", "thread_id": "t-old", "from": "Fredrik", "subject": "Vintervecka",
+                 "date": "2025-09-09 08:00", "unread": false}
+            ]}),
+        ));
+        assert_eq!(mailbox.threads.len(), 2, "one line gained a message");
+        assert_eq!(mailbox.threads[0].count, 2);
+        assert_eq!(mailbox.threads[0].latest.id, "18f4", "the newest is still the line");
+        assert!(mailbox.threads[0].unread, "and the older one is unread");
+    }
+
+    // --------------------------------------------------- walking one of them
+
+    /// A conversation exactly as `post_thread` answers it.
+    fn conversation() -> Conversation {
+        Conversation::of_answer(
+            "ed@acme.com",
+            &json!({
+                "account": "ed@acme.com",
+                "thread_id": "t-quote",
+                "subject": "Re: the quote",
+                "count": 3,
+                "messages": [
+                    {"id": "18f1", "from": "Ale <ale@acme.com>", "date": "2025-09-10 19:20",
+                     "subject": "The quote", "unread": false, "text": "Can you send the quote?"},
+                    {"id": "18f3", "from": "Ed <ed@acme.com>", "date": "2025-09-12 09:10",
+                     "subject": "Re: the quote", "unread": false, "text": "On its way."},
+                    {"id": "18f4", "from": "Ale <ale@acme.com>", "date": "2025-09-12 10:33",
+                     "subject": "Re: the quote", "unread": true, "text": "Looks good."}
+                ]
+            }),
+        )
+    }
+
+    /// A conversation opens at its newest message, open, with the earlier ones
+    /// above it — and the sent reply among them.
+    #[test]
+    fn a_conversation_opens_at_its_newest_message() {
+        let thread = conversation();
+        assert_eq!(thread.id, "t-quote");
+        assert_eq!(thread.subject, "Re: the quote");
+        assert_eq!(thread.messages.len(), 3);
+        assert_eq!(thread.messages[0].id, "18f1", "oldest first");
+        assert_eq!(thread.newest().expect("a message").id, "18f4");
+        assert_eq!(thread.focus, 2);
+        assert_eq!(thread.open, Some(2));
+        assert_eq!(thread.opened().expect("a message").id, "18f4");
+        // A reply of this account's own is a message on the conversation like
+        // any other.
+        assert_eq!(thread.messages[1].from, "Ed <ed@acme.com>");
+        assert!(thread.messages[2].unread, "and unread is carried per message");
+
+        // A conversation with nothing on it has nothing open.
+        let empty = Conversation::of_answer("ed@acme.com", &json!({"messages": []}));
+        assert_eq!(empty.open, None);
+        assert_eq!(empty.opened(), None);
+        assert_eq!(empty.newest(), None);
+    }
+
+    /// Up and Down walk the messages, stopping at either end; Enter opens the
+    /// one they are on and closes it again, and only ever one is open.
+    #[test]
+    fn the_keyboard_walks_the_conversation_and_enter_opens_one() {
+        let mut thread = conversation();
+
+        assert!(thread.step(-1));
+        assert_eq!(thread.focus, 1);
+        assert_eq!(thread.open, Some(2), "walking past one does not open it");
+        assert_eq!(thread.focused().expect("a message").id, "18f3");
+
+        thread.toggle();
+        assert_eq!(thread.open, Some(1), "and the one that was open closed");
+        assert_eq!(thread.opened().expect("a message").id, "18f3");
+
+        thread.toggle();
+        assert_eq!(thread.open, None, "the same one again closes it");
+
+        assert!(thread.step(-1));
+        assert_eq!(thread.focus, 0);
+        assert!(!thread.step(-1), "the oldest is the top");
+        assert_eq!(thread.focus, 0);
+
+        assert!(thread.step(9));
+        assert_eq!(thread.focus, 2, "and the newest is the bottom");
+        assert!(!thread.step(1));
+
+        // A conversation with nothing on it has nothing to walk or to open.
+        let mut empty = Conversation::default();
+        assert!(!empty.step(1));
+        empty.toggle();
+        assert_eq!(empty.open, None);
+    }
+
+    /// A message trashed out of a conversation leaves it, and the keyboard and
+    /// the open message stay on something that is still there.
+    #[test]
+    fn a_trashed_message_leaves_the_conversation() {
+        let mut thread = conversation();
+        thread.remove("18f4");
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.focus, 1, "the focus followed the shorter list");
+        assert_eq!(thread.opened().expect("a message").id, "18f3");
+
+        // One above the open message shifts it up rather than opening another.
+        let mut thread = conversation();
+        thread.remove("18f1");
+        assert_eq!(thread.open, Some(1));
+        assert_eq!(thread.opened().expect("a message").id, "18f4");
+
+        // A message this conversation never had changes nothing.
+        thread.remove("nope");
+        assert_eq!(thread.messages.len(), 2);
+
+        thread.remove("18f3");
+        thread.remove("18f4");
+        assert!(thread.messages.is_empty());
+        assert_eq!(thread.open, None);
     }
 }

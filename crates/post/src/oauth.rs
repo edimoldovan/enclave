@@ -21,9 +21,14 @@ use sha2::{Digest, Sha256};
 use crate::store::{Client, OauthTokens};
 use crate::{gmail, paths, store};
 
-/// What Post asks for: read mail, and change its labels. Enough for v1's seven
-/// verbs, and not enough to send anything.
-pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+/// What Post asks for: read mail and change its labels, and send a reply.
+///
+/// Two scopes, because `gmail.modify` does not cover sending — Google keeps
+/// `users.messages.send` behind `gmail.send`, which grants that and nothing
+/// else. An account connected before this line grew has only the first, and
+/// has to be connected again for `post_send` to work.
+pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify \
+                         https://www.googleapis.com/auth/gmail.send";
 
 const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
@@ -415,6 +420,12 @@ mod tests {
             url.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify"),
             "got {url}"
         );
+        // Sending is its own scope: gmail.modify does not cover it.
+        assert!(
+            url.contains("%20https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.send"),
+            "got {url}"
+        );
+        assert_eq!(SCOPE.split_whitespace().count(), 2, "two scopes, one space");
     }
 
     #[test]

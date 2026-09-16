@@ -98,8 +98,9 @@ pub fn page(html: &str, bg: [u8; 3], fg: [u8; 3], link: [u8; 3]) -> String {
          script-src 'none'; frame-src 'none'; media-src 'none'; object-src 'none'; \
          connect-src 'none'; form-action 'none'; base-uri 'none'\">\
          <meta name=\"referrer\" content=\"no-referrer\">\
-         <style>html,body{{margin:0;padding:14px;background:{bg};color:{fg};\
+         <style>html,body{{margin:0;padding:0;background:{bg};color:{fg};\
          font:14px/1.5 system-ui,sans-serif;overflow-wrap:break-word}}\
+         body{{padding:14px}}\
          a{{color:{link}}} img{{max-width:100%;height:auto}} \
          table{{max-width:100%}}</style></head><body>{before}{after}</body></html>",
         bg = hex(bg),
@@ -372,6 +373,20 @@ mod real {
         /// True when this body is already on screen.
         pub fn showing(&self, key: &str) -> bool {
             self.showing.as_deref() == Some(key)
+        }
+
+        /// How many of the page's own pixels go in one point of this window,
+        /// where `ppp` is what egui draws a point as.
+        ///
+        /// The pane is placed in physical pixels and WebKit draws a CSS pixel
+        /// in one of those, unless GDK is scaling the native side too. So a
+        /// page that says 14px text is saying 14 of these, and a window whose
+        /// point is more than one pixel is showing that page smaller than the
+        /// same numbers would be here. Anything measuring the page in this
+        /// window's units divides by this.
+        pub fn density(&self, ppp: f32) -> f32 {
+            let scale = self.view.as_ref().map(scale_of).unwrap_or(1.0) as f32;
+            (ppp / scale.max(1.0)).max(0.1)
         }
 
         /// The chords pressed over the pane since this was last asked.
@@ -928,6 +943,11 @@ mod real {
 
         pub fn showing(&self, key: &str) -> bool {
             self.showing.as_deref() == Some(key)
+        }
+
+        /// No pane, so nothing is drawn in the page's pixels.
+        pub fn density(&self, _ppp: f32) -> f32 {
+            1.0
         }
 
         pub fn pressed(&mut self) -> Vec<KeyboardShortcut> {

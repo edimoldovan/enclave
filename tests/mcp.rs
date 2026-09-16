@@ -37,8 +37,8 @@ fn tools_list_carries_the_whole_product() {
     );
     assert_eq!(
         listed.len(),
-        31,
-        "the whole surface: 3 enclave, 7 post verbs + post_show, 20 grido"
+        34,
+        "the whole surface: 3 enclave, 10 post verbs + post_show, 20 grido"
     );
     let names: Vec<&str> = listed
         .iter()
@@ -57,16 +57,17 @@ fn tools_list_carries_the_whole_product() {
     for expected in ["enclave_status", "enclave_computers", "enclave_send_file"] {
         assert!(names.contains(&expected), "{expected} is missing");
     }
-    // Mail: the seven v1 verbs, served by the shim itself.
+    // Mail: the v1 verbs, served by the shim itself.
     for expected in [
         "post_accounts",
         "post_add_account",
         "post_list",
         "post_read",
+        "post_thread",
         "post_mark",
         "post_delete",
         "post_attachment",
-        // And the window those seven are read in.
+        // And the window they are read in.
         "post_show",
     ] {
         assert!(names.contains(&expected), "{expected} is missing");

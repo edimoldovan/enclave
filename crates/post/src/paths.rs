@@ -122,6 +122,20 @@ pub fn read_cache_file(email: &str, id: &str) -> PathBuf {
         .join(format!("{}.json", safe(id)))
 }
 
+/// Replies written but not sent, one directory per account. A draft is only
+/// ever a step on the way to [`crate::reply::send`], which removes it again.
+pub fn drafts_dir() -> PathBuf {
+    state_dir().join("postdrafts")
+}
+
+/// One draft. Both the address and the draft id are filenames here, so nothing
+/// in either may be a path.
+pub fn draft_file(email: &str, draft_id: &str) -> PathBuf {
+    drafts_dir()
+        .join(safe(email))
+        .join(format!("{}.json", safe(draft_id)))
+}
+
 /// A name as a filename: nothing in it is allowed to be a path.
 ///
 /// A separator is neutralised, and so is a name that is a directory rather
@@ -344,6 +358,11 @@ mod tests {
                 inside(
                     &body_file(hostile, "18f3a2c9b1"),
                     state.join("postbodies"),
+                    hostile,
+                );
+                inside(
+                    &draft_file("ed@acme.com", hostile),
+                    state.join("postdrafts"),
                     hostile,
                 );
             }

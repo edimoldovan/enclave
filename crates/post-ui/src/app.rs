@@ -144,11 +144,13 @@ impl PostApp {
             Command::Open => self.open_focused(),
             Command::Next => self.step(1),
             Command::Previous => self.step(-1),
-            Command::PageNext => self.step(PAGE_STEP),
-            Command::PagePrevious => self.step(-PAGE_STEP),
+            Command::PageNext => self.page(PAGE_STEP),
+            Command::PagePrevious => self.page(-PAGE_STEP),
             Command::Last => self.to_end(),
             Command::Delete => self.delete_current(),
             Command::MarkUnread => self.mark_unread(),
+            Command::Reply => self.reply(),
+            Command::Send => self.send_reply(),
             Command::AddAccount => {
                 if !self.connecting {
                     self.start(Job::AddAccount);
@@ -168,27 +170,86 @@ impl PostApp {
                 self.paging = false;
             }
             View::Detail { .. } => {
-                self.message = None;
+                self.conversation = None;
                 self.body = None;
                 self.web.hide();
             }
+            // The headers again, off the message being answered. What has been
+            // typed is the reader's and is not refreshed away.
+            View::Compose { .. } => self.draft = None,
         }
         self.asked = None;
     }
 
-    /// Opens the row the keyboard is on.
+    /// Writes a reply to the conversation on screen: the editor opens empty,
+    /// with the address and the subject on their way.
+    ///
+    /// A reply answers the newest message on the conversation, whichever one
+    /// the keyboard happens to be resting on — that is what "reply" means in a
+    /// conversation, and it is what keeps it on one thread.
+    fn reply(&mut self) {
+        if self.nav.top().message().is_none() {
+            return;
+        }
+        let (Some(account), Some(id)) = (
+            self.account().map(str::to_owned),
+            self.conversation
+                .as_ref()
+                .and_then(|thread| thread.newest())
+                .map(|message| message.id.clone()),
+        ) else {
+            return;
+        };
+        self.compose.clear();
+        self.to.clear();
+        self.cc.clear();
+        self.draft = None;
+        self.sending = false;
+        self.goto(View::Compose { account, id });
+    }
+
+    /// Sends what has been written. Two calls: the draft is rewritten with the
+    /// typed body and the addresses as the fields have them, and that draft is
+    /// sent — no dialog, because the key press that got here is the consent.
+    fn send_reply(&mut self) {
+        let View::Compose { account, id } = self.nav.top().clone() else {
+            return;
+        };
+        if self.sending {
+            return;
+        }
+        if self.compose.trim().is_empty() {
+            self.set_status("Write something first.");
+            return;
+        }
+        self.sending = true;
+        self.start(Job::Draft {
+            account,
+            id,
+            body: self.compose.clone(),
+            to: Some(self.to.clone()),
+            cc: Some(self.cc.clone()),
+        });
+    }
+
+    /// Enter: the account the keyboard is on, the conversation it is on, or —
+    /// inside one — the message it is on, opened or closed again.
     fn open_focused(&mut self) {
         if self.nav.top() == &View::Accounts {
             self.activate_account();
             return;
         }
-        let (Some(account), Some(row)) = (
+        if self.nav.top().message().is_some() {
+            self.toggle_message();
+            return;
+        }
+        let (Some(account), Some(id)) = (
             self.account().map(str::to_owned),
-            self.rows().get(self.focus).cloned(),
+            self.threads().get(self.focus).map(|thread| thread.id.clone()),
         ) else {
             return;
         };
-        self.open(&account, &row.id);
+        self.open(&account, &id);
     }
 
     /// Enter on the account list: the selected account's mail, or the add
@@ -206,7 +267,8 @@ impl PostApp {
         }
     }
 
-    /// Opens one message. Reading it is what marks it read.
+    /// Opens one conversation. Showing it is what marks its unread messages
+    /// read. `id` is the conversation's, or any message on it.
     pub fn open(&mut self, account: &str, id: &str) {
         self.goto(View::Detail {
             account: account.to_string(),
@@ -214,16 +276,62 @@ impl PostApp {
         });
     }
 
-    /// Down and Up: the next row in a list, a notch of the body in a message.
-    /// The same two keys, because in both views they mean "further on".
+    /// Down and Up: the next line in a list, the next message in a
+    /// conversation. The same two keys, because in every view they mean
+    /// "further on".
     fn step(&mut self, by: i32) {
+        // In a reply the keys are the editor's, whether or not it has focus.
+        if self.nav.top().replying_to().is_some() {
+            return;
+        }
         if self.nav.top().message().is_some() {
-            self.body_scroll += by as f32 * BODY_STEP;
+            self.step_conversation(by);
         } else if self.nav.top() == &View::Accounts {
             self.move_account_focus(by);
         } else {
             self.move_focus(by);
         }
+    }
+
+    /// PageDown and PageUp: a screenful of the list, and a screenful of the
+    /// open message's body. Walking a conversation is the arrows' job; these
+    /// are how the body under them moves without a mouse.
+    fn page(&mut self, by: i32) {
+        if self.nav.top().replying_to().is_some() {
+            return;
+        }
+        if self.nav.top().message().is_some() {
+            self.body_scroll += by as f32 * BODY_STEP;
+        } else {
+            self.step(by);
+        }
+    }
+
+    /// Walks the conversation on screen, message by message, and asks the list
+    /// to bring the one it landed on back into view.
+    pub fn step_conversation(&mut self, by: i32) {
+        let moved = self
+            .conversation
+            .as_mut()
+            .is_some_and(|conversation| conversation.step(by));
+        if moved {
+            self.follow_focus = true;
+        }
+    }
+
+    /// Enter on a message of the conversation: opens it, or closes it when it
+    /// is the one already open. Only ever one is open, so the body pane always
+    /// has exactly one message to draw.
+    ///
+    /// The body opens under that message's own line, so the line is brought
+    /// into view: expanding one at the bottom of a long conversation must not
+    /// open it off screen.
+    pub fn toggle_message(&mut self) {
+        if let Some(conversation) = &mut self.conversation {
+            conversation.toggle();
+        }
+        self.follow_focus = true;
+        self.show_open_message();
     }
 
     /// Moves the keyboard's stop in the account list, and asks it to bring
@@ -238,12 +346,12 @@ impl PostApp {
         self.follow_focus = true;
     }
 
-    /// Moves the keyboard's row, and asks the list to bring it back into view.
+    /// Moves the keyboard's line, and asks the list to bring it back into view.
     ///
-    /// Landing on the last row loaded — or pressing on past it — is the ask
-    /// for the page after this one, which goes on the end.
+    /// Landing on the last conversation loaded — or pressing on past it — is
+    /// the ask for the page after this one, which goes on the end.
     pub fn move_focus(&mut self, by: i32) {
-        let rows = self.rows().len();
+        let rows = self.threads().len();
         if rows == 0 {
             return;
         }
@@ -258,17 +366,17 @@ impl PostApp {
         self.follow_focus = true;
     }
 
-    /// End: the last row loaded, and the page after it. In a message the key
-    /// is the body's, not the list's.
+    /// End: the last line loaded, and the page after it. In a conversation the
+    /// key is the body's, not the list's.
     fn to_end(&mut self) {
-        if self.nav.top().message().is_some() {
+        if self.nav.top().message().is_some() || self.nav.top().replying_to().is_some() {
             return;
         }
         if self.nav.top() == &View::Accounts {
             self.move_account_focus(self.account_stops() as i32);
             return;
         }
-        let rows = self.rows().len();
+        let rows = self.threads().len();
         if rows == 0 {
             return;
         }
@@ -279,16 +387,30 @@ impl PostApp {
         self.load_more();
     }
 
-    /// Trashes the message on screen, or the row the keyboard is on.
+    /// Trashes the message the keyboard is on in a conversation, or the whole
+    /// conversation the keyboard is on in the list. Nothing at all while a
+    /// reply is being written: there is no message under this view.
     fn delete_current(&mut self) {
         let Some(account) = self.account().map(str::to_owned) else {
             return;
         };
-        let id = match self.nav.top().message() {
-            Some(id) => Some(id.to_string()),
-            None => self.rows().get(self.focus).map(|row| row.id.clone()),
+        if self.nav.top().replying_to().is_some() {
+            return;
+        }
+        let ids: Vec<String> = match self.nav.top().message() {
+            Some(_) => self
+                .conversation
+                .as_ref()
+                .and_then(|thread| thread.focused())
+                .map(|message| vec![message.id.clone()])
+                .unwrap_or_default(),
+            None => self
+                .threads()
+                .get(self.focus)
+                .map(|thread| thread.ids.clone())
+                .unwrap_or_default(),
         };
-        if let Some(id) = id {
+        for id in ids {
             self.delete(&account, &id);
         }
     }
@@ -301,11 +423,17 @@ impl PostApp {
         });
     }
 
-    /// Puts the unread flag back on the message on screen.
+    /// Puts the unread flag back on the message the keyboard is on.
     fn mark_unread(&mut self) {
+        if self.nav.top().message().is_none() {
+            return;
+        }
         let (Some(account), Some(id)) = (
             self.account().map(str::to_owned),
-            self.nav.top().message().map(str::to_owned),
+            self.conversation
+                .as_ref()
+                .and_then(|thread| thread.focused())
+                .map(|message| message.id.clone()),
         ) else {
             return;
         };
@@ -335,13 +463,20 @@ impl PostApp {
                     page: None,
                 }),
             },
-            View::Detail { account, id } => match &self.message {
-                Some(message) if &message.id == id => None,
-                _ => Some(Job::Read {
-                    account: account.clone(),
-                    id: id.clone(),
-                }),
-            },
+            View::Detail { account, id } => (!self.showing(id)).then(|| Job::Thread {
+                account: account.clone(),
+                id: id.clone(),
+            }),
+            // A reply with nothing in it yet: drafted only to read the address
+            // and the subject off the message being answered. Nothing is sent,
+            // and the body that replaces it is the one the reader types.
+            View::Compose { account, id } => self.draft.is_none().then(|| Job::Draft {
+                account: account.clone(),
+                id: id.clone(),
+                body: String::new(),
+                to: None,
+                cc: None,
+            }),
         };
         self.asked = Some(view);
         if let Some(job) = job {
@@ -354,11 +489,15 @@ impl PostApp {
         let title = match self.nav.top() {
             View::Accounts => "Post".to_string(),
             View::Inbox { account } => format!("Post — {account}"),
-            View::Detail { account, .. } => match &self.message {
-                Some(message) if !message.subject.is_empty() => {
-                    format!("Post — {}", message.subject)
+            View::Detail { account, .. } => match &self.conversation {
+                Some(thread) if !thread.subject.is_empty() => {
+                    format!("Post — {}", thread.subject)
                 }
                 _ => format!("Post — {account}"),
+            },
+            View::Compose { account, .. } => match &self.draft {
+                Some(draft) if !draft.subject.is_empty() => format!("Post — {}", draft.subject),
+                _ => format!("Post — reply from {account}"),
             },
         };
         if title != self.last_title {
@@ -381,6 +520,7 @@ mod tests {
             .map(|i| {
                 json!({
                     "id": format!("18f{i}"),
+                    "thread_id": format!("18f{i}"),
                     "from": "Ale <ale@acme.com>",
                     "subject": "Re: the quote",
                     "date": "2025-09-12 10:33",
@@ -443,35 +583,292 @@ mod tests {
         assert!(!app.follow_focus);
     }
 
-    /// In a message the same two keys move the body instead: nothing is
-    /// selected in a message, and the selection in the list behind it stays
-    /// exactly where the reader left it.
-    #[test]
-    fn in_a_message_the_arrows_move_the_body() {
+    // --------------------------------------------------------------- replying
+
+    /// A reply, exactly as Post's own library addresses one.
+    fn draft() -> crate::client::Draft {
+        crate::client::Draft {
+            id: "reply-18f7".to_string(),
+            to: "ale@acme.com".to_string(),
+            cc: "cm@ey.com".to_string(),
+            subject: "Re: the quote".to_string(),
+            attribution: "On 2025-09-12 10:33, Ale <ale@acme.com> wrote:".to_string(),
+            quote: "Can you send the quote?".to_string(),
+        }
+    }
+
+    /// A conversation of three messages, exactly as `post_thread` answers it:
+    /// the message asked for, a reply of this account's own, and the newest.
+    fn conversation(id: &str) -> crate::client::Conversation {
+        crate::client::Conversation::of_answer(
+            "ed@acme.com",
+            &json!({
+                "account": "ed@acme.com",
+                "thread_id": id,
+                "subject": "Re: the quote",
+                "messages": [
+                    {"id": format!("{id}-a"), "from": "Ale <ale@acme.com>",
+                     "date": "2025-09-10 19:20", "unread": false, "text": "The quote?"},
+                    {"id": format!("{id}-b"), "from": "Ed <ed@acme.com>",
+                     "date": "2025-09-12 09:10", "unread": false, "text": "On its way."},
+                    {"id": id, "from": "Ale <ale@acme.com>",
+                     "date": "2025-09-12 10:33", "unread": true, "text": "Looks good."}
+                ]
+            }),
+        )
+    }
+
+    /// A conversation open on screen.
+    fn reading(id: &str) -> PostApp {
         let mut app = inbox(40);
+        app.open("ed@acme.com", id);
+        app.absorb(Done::Thread(conversation(id)));
+        app
+    }
+
+    /// A conversation open, and Reply pressed on it.
+    fn replying() -> PostApp {
+        let mut app = reading("18f7");
+        app.reply();
+        app
+    }
+
+    /// Reply puts the editor over the message, empty, with the message behind
+    /// it: the body pane is gone and Back goes to what is being answered.
+    #[test]
+    fn reply_opens_an_empty_editor_over_the_message() {
+        let app = replying();
+        assert_eq!(
+            app.nav.top(),
+            &View::Compose {
+                account: "ed@acme.com".to_string(),
+                id: "18f7".to_string(),
+            }
+        );
+        assert_eq!(app.nav.depth(), 3, "the inbox, the message, the reply");
+        assert!(app.compose.is_empty(), "a reply starts empty");
+        assert!(app.draft.is_none(), "and unaddressed until the draft lands");
+        assert!(!app.sending);
+        // A reply is not the message: nothing here is the body pane's.
+        assert!(app.nav.top().message().is_none());
+        assert_eq!(app.nav.top().replying_to(), Some("18f7"));
+
+        // Nothing to reply to is not a reply: from the list, Reply does
+        // nothing rather than composing to whatever was selected.
+        let mut list = inbox(40);
+        list.reply();
+        assert_eq!(
+            list.nav.top(),
+            &View::Inbox {
+                account: "ed@acme.com".to_string()
+            }
+        );
+    }
+
+    /// The draft says who the reply goes to and what it is about. It does not
+    /// touch what has been typed: the editor owns the body.
+    #[test]
+    fn the_draft_addresses_the_reply_without_touching_it() {
+        let mut app = replying();
+        app.compose = "Looks good — send it.".to_string();
+        app.absorb(Done::Drafted(draft()));
+
+        let addressed = app.draft.as_ref().expect("a draft");
+        assert_eq!(addressed.to, "ale@acme.com");
+        assert_eq!(addressed.subject, "Re: the quote");
+        assert_eq!(app.compose, "Looks good — send it.", "untouched");
+        assert!(!app.sending, "nothing was asked to be sent");
+        assert!(!app.jobs.busy(), "and nothing was started");
+
+        // The reply answers everybody, and the fields say so — they are the
+        // reader's from here.
+        assert_eq!(app.to, "ale@acme.com");
+        assert_eq!(app.cc, "cm@ey.com");
+    }
+
+    /// The addresses are filled once. What the reader types over them is what
+    /// is sent: the draft that comes back on the way out does not write over
+    /// the fields it was built from.
+    #[test]
+    fn the_address_fields_are_the_readers_once_they_are_filled() {
+        let mut app = replying();
+        app.absorb(Done::Drafted(draft()));
+        app.to = "fredrik@norberg.se".to_string();
+        app.cc.clear();
+        app.compose = "Ses där.".to_string();
+
+        app.send_reply();
+        assert!(app.sending);
+
+        app.absorb(Done::Drafted(draft()));
+        assert_eq!(app.to, "fredrik@norberg.se", "not written back over");
+        assert!(app.cc.is_empty());
+    }
+
+    /// Sending is two steps: the draft is rewritten with what was typed, and
+    /// that draft is what goes. An empty reply is not sent at all.
+    #[test]
+    fn sending_writes_the_typed_body_down_first() {
+        let mut app = replying();
+        app.absorb(Done::Drafted(draft()));
+
+        app.set_status("");
+        app.send_reply();
+        assert!(!app.sending, "an empty reply is not a reply");
+        assert!(!app.jobs.busy());
+        assert!(app.status.contains("Write something"), "got {}", app.status);
+
+        app.compose = "Looks good — send it.".to_string();
+        app.send_reply();
+        assert!(app.sending);
+        assert_eq!(app.status, Job::Draft {
+            account: "ed@acme.com".to_string(),
+            id: "18f7".to_string(),
+            body: "Looks good — send it.".to_string(),
+            to: Some("ale@acme.com".to_string()),
+            cc: Some("cm@ey.com".to_string()),
+        }
+        .about());
+
+        // The draft that comes back while sending is the one to send.
+        app.absorb(Done::Drafted(draft()));
+        assert!(app.sending, "still on its way");
+        assert_eq!(app.draft.as_ref().expect("a draft").id, "reply-18f7");
+    }
+
+    /// Sent: the editor empties and the reader is back at the message they
+    /// answered, with one line saying where it went.
+    #[test]
+    fn a_sent_reply_goes_back_to_the_message() {
+        let mut app = replying();
+        app.compose = "Looks good.".to_string();
+        app.sending = true;
+        app.absorb(Done::Sent {
+            to: "ale@acme.com".to_string(),
+        });
+
+        assert!(!app.sending);
+        assert!(app.compose.is_empty(), "nothing is left in the editor");
+        assert!(app.draft.is_none());
+        assert_eq!(
+            app.nav.top(),
+            &View::Detail {
+                account: "ed@acme.com".to_string(),
+                id: "18f7".to_string(),
+            }
+        );
+        assert!(app.status.contains("ale@acme.com"), "got {}", app.status);
+    }
+
+    /// A reply that did not go keeps every word of itself: the reader can fix
+    /// whatever it was and send again.
+    #[test]
+    fn a_reply_that_failed_is_still_written() {
+        let mut app = replying();
+        app.compose = "Looks good.".to_string();
+        app.sending = true;
+        app.absorb(Done::Failed {
+            about: "Sending…".to_string(),
+            error: "Gmail refused the call (403)".to_string(),
+        });
+
+        assert!(!app.sending, "and the window is not left waiting");
+        assert_eq!(app.compose, "Looks good.");
+        assert_eq!(
+            app.nav.top(),
+            &View::Compose {
+                account: "ed@acme.com".to_string(),
+                id: "18f7".to_string(),
+            },
+            "still in the reply, where the words are"
+        );
+        assert!(app.status.contains("403"), "got {}", app.status);
+    }
+
+    /// The keys that act on a message do nothing to a reply: there is no row
+    /// under this view to trash, and no body of someone else's to scroll.
+    #[test]
+    fn the_message_keys_do_nothing_while_a_reply_is_open() {
+        let mut app = replying();
         app.focus = 7;
-        app.open("ed@acme.com", "18f7");
 
         app.step(1);
-        assert!(app.body_scroll > 0.0, "down scrolls down");
+        assert_eq!(app.body_scroll, 0.0, "nothing to scroll here");
+        assert_eq!(app.focus, 7, "and nothing to select");
+
+        app.to_end();
+        assert_eq!(app.focus, 7);
+
+        app.set_status("");
+        app.delete_current();
+        assert!(!app.jobs.busy(), "nothing was trashed");
+        assert_eq!(app.status, "");
+    }
+
+    /// In a conversation the same two keys walk its messages instead, and
+    /// Enter opens the one they land on. The selection in the list behind
+    /// stays exactly where the reader left it.
+    #[test]
+    fn in_a_conversation_the_arrows_walk_its_messages() {
+        let mut app = reading("18f7");
+        app.focus = 7;
+        let thread = app.conversation.as_ref().expect("a conversation");
+        assert_eq!(thread.focus, 2, "opened at the newest");
+        assert_eq!(thread.open, Some(2));
+
+        app.step(-1);
+        let thread = app.conversation.as_ref().expect("a conversation");
+        assert_eq!(thread.focus, 1, "up walks back through the conversation");
+        assert_eq!(thread.open, Some(2), "and opens nothing on the way");
         assert_eq!(app.focus, 7, "the list behind it did not move");
+        assert!(app.follow_focus, "the conversation follows the keyboard");
 
+        app.exec(Command::Open, &eframe::egui::Context::default());
+        let thread = app.conversation.as_ref().expect("a conversation");
+        assert_eq!(thread.open, Some(1), "Enter opens the one it is on");
+        assert_eq!(app.message().expect("a message").id, "18f7-b");
+
+        app.exec(Command::Open, &eframe::egui::Context::default());
+        assert!(app.message().is_none(), "and closes it again");
+
+        // The page keys are what moves a body without a mouse.
+        app.page(1);
+        assert!(app.body_scroll > 0.0, "page down scrolls down");
         let down = app.body_scroll;
-        app.step(-1);
-        assert_eq!(app.body_scroll, 0.0, "up undoes down");
-        app.step(-1);
-        assert_eq!(app.body_scroll, -down, "and keeps going up");
-        assert!(!app.follow_focus);
-
+        app.page(-1);
+        assert_eq!(app.body_scroll, 0.0, "page up undoes it");
         // The frame that scrolls takes it; the next one starts from nothing.
+        app.body_scroll = down;
         let taken = std::mem::take(&mut app.body_scroll);
         assert!(taken != 0.0);
         assert_eq!(app.body_scroll, 0.0);
 
-        // Back in the list, they move the selection again.
+        // Back in the list, the arrows move the selection again.
         app.back();
         app.step(1);
         assert_eq!(app.focus, 8);
         assert_eq!(app.body_scroll, 0.0);
+    }
+
+    /// Reply answers the newest message on the conversation, whichever one the
+    /// keyboard is resting on — that is what keeps it on one thread.
+    #[test]
+    fn reply_answers_the_newest_message_on_the_conversation() {
+        let mut app = reading("18f7");
+        app.step_conversation(-2);
+        assert_eq!(
+            app.conversation.as_ref().expect("a conversation").focus,
+            0,
+            "the keyboard is on the oldest"
+        );
+        app.reply();
+        assert_eq!(
+            app.nav.top(),
+            &View::Compose {
+                account: "ed@acme.com".to_string(),
+                id: "18f7".to_string(),
+            },
+            "and the reply still answers the newest"
+        );
     }
 }

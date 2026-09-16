@@ -205,18 +205,20 @@ fn every_advertised_tool_is_classified() {
         "grido_find",
         "grido_stats",
     ];
-    // Mail's whole v1 surface is free: it reads, it flips a read flag, it moves
-    // a message to a trash it can be pulled back out of, or it puts the window
-    // on screen. Named one by one so the next verb has to be thought about
-    // rather than swept in.
-    const MAIL: [&str; 8] = [
+    // Mail's free surface: it reads, it flips a read flag, it moves a message
+    // to a trash it can be pulled back out of, it writes a reply down without
+    // sending it, or it puts the window on screen. Named one by one so the next
+    // verb has to be thought about rather than swept in. post_send is not here.
+    const MAIL: [&str; 10] = [
         "post_accounts",
         "post_add_account",
         "post_list",
         "post_read",
+        "post_thread",
         "post_mark",
         "post_delete",
         "post_attachment",
+        "post_draft",
         "post_show",
     ];
     let mut acted = 0;
@@ -235,18 +237,24 @@ fn every_advertised_tool_is_classified() {
             acted += 1;
         }
     }
-    // The whole surface, not a subset of it: 20 grido verbs, 7 post ones plus
+    // The whole surface, not a subset of it: 20 grido verbs, 10 post ones plus
     // post_show, and 3 of the enclave's own.
-    assert_eq!(read + acted, 31, "the tool count changed; check this list");
-    assert_eq!(read, 16);
+    assert_eq!(read + acted, 34, "the tool count changed; check this list");
+    assert_eq!(read, 18);
     assert!(acting("enclave_send_file"));
     // Opening the window is free however it is asked for: it shows the user
     // their own mail and changes nothing.
     assert!(!acting("post_show"));
     // A verb added later under a known prefix is asked about until someone says
-    // otherwise — post_send must not arrive free.
+    // otherwise.
     assert!(acting("grido_something_new"));
+    assert!(acting("post_forward"));
+    // Sending mail is the one mail verb that acts — and the one tool that can
+    // never be allowed for good: every reply is its own question.
     assert!(acting("post_send"));
+    assert!(enclave::confirm::always_asks("post_send"));
+    assert!(!enclave::confirm::always_asks("post_draft"));
+    assert!(!enclave::confirm::always_asks("enclave_send_file"));
     // Nothing outside the product's own names is in the set at all.
     assert!(!acting("workbook_info"));
     assert!(!acting("rm"));

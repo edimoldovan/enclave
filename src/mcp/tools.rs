@@ -133,8 +133,8 @@ pub const POST_PREFIX: &str = post::PREFIX;
 /// library stays a library.
 pub const POST_SHOW: &str = "post_show";
 
-/// Post's seven verbs off the palette table it shares with `enclave post`, and
-/// the window they are read in.
+/// Post's verbs off the palette table it shares with `enclave post`, and the
+/// window they are read in.
 pub fn post_definitions() -> Vec<Value> {
     let mut tools = post::verbs::definitions();
     tools.push(json!({
@@ -171,9 +171,12 @@ pub fn post_definitions() -> Vec<Value> {
     tools
 }
 
-/// Runs one `post_` tool, here in this process. All of v1 is free — reading
-/// mail, a read flag, a message to the trash, a window — so none of it goes
-/// near the confirmation broker.
+/// Runs one `post_` tool, here in this process.
+///
+/// Nothing here asks the user: the gate is the caller's. Almost every verb is
+/// free — reading mail, a read flag, a message to the trash, a draft written
+/// down, a window — and the shim answers those itself. `post_send` is not, so
+/// the shim sends it to the server, which asks and then calls this.
 pub fn post_call(tool: &str, args: &Value) -> Result<Value, String> {
     if tool == POST_SHOW {
         return post_show(args);
@@ -224,6 +227,9 @@ fn opened(view: &View) -> String {
         View::Accounts => "opened accounts".to_string(),
         View::Inbox { account } => format!("opened inbox {account}"),
         View::Detail { account, id } => format!("opened message {id} in {account}"),
+        // Not a view post_show asks for — it has three — but the window can be
+        // at one, and a line that says so is better than one that guesses.
+        View::Compose { account, id } => format!("opened a reply to {id} in {account}"),
     }
 }
 
