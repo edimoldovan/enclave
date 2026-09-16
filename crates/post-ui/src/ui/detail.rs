@@ -75,7 +75,13 @@ impl PostApp {
         // to scroll it from outside, and a message is not a program to run one
         // in — so over that pane the keys that scroll it are WebKit's. Only the
         // chords bound to Back are taken back; see `web::chord`.
-        let scroll = std::mem::take(&mut self.body_scroll);
+        let mut scroll = std::mem::take(&mut self.body_scroll);
+        // A body in the native pane scrolls inside WebKit, not in this scroll
+        // area — the arrows' points are handed to it as a synthesized wheel.
+        if scroll != 0.0 && self.web.placed() == Placed::Pane {
+            self.web.scroll(scroll * ctx.pixels_per_point());
+            scroll = 0.0;
+        }
         let follow = std::mem::take(&mut self.follow_focus);
         let open = conversation.opened().map(|message| message.id.clone());
         let key = format!("{account}/{}", open.as_deref().unwrap_or(id));

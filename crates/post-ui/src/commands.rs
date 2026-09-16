@@ -33,6 +33,8 @@ pub enum Command {
     Reply,
     /// Send the reply being written.
     Send,
+    /// Copy the message body's selection.
+    Copy,
     /// Connect a Gmail account through Google's own consent screen.
     AddAccount,
     /// The shortcut viewer.
@@ -58,6 +60,7 @@ impl Command {
             "mark_unread" => MarkUnread,
             "reply" => Reply,
             "send" => Send,
+            "copy" => Copy,
             "add_account" => AddAccount,
             "shortcut_help" => ShortcutHelp,
             "quit" => Quit,
@@ -82,6 +85,7 @@ impl Command {
             MarkUnread => "Mark unread",
             Reply => "Reply",
             Send => "Send reply",
+            Copy => "Copy selection",
             AddAccount => "Add account",
             ShortcutHelp => "Keyboard shortcuts",
             Quit => "Close window",
@@ -125,6 +129,7 @@ impl Command {
             MarkUnread => "mark_unread",
             Reply => "reply",
             Send => "send",
+            Copy => "copy",
             AddAccount => "add_account",
             ShortcutHelp => "shortcut_help",
             Quit => "quit",

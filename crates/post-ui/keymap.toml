@@ -33,6 +33,7 @@
 
 # --- Doing something: Ctrl+<letter> ---
 "Ctrl+R" = "refresh"
+"Ctrl+C" = "copy"
 "Ctrl+U" = "mark_unread"
 "Ctrl+N" = "add_account"
 "Ctrl+W" = "quit"

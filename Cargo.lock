@@ -3390,6 +3390,7 @@ dependencies = [
  "gtk",
  "post",
  "serde_json",
+ "webkit2gtk",
  "wry",
 ]
 

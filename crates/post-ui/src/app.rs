@@ -40,6 +40,15 @@ impl eframe::App for PostApp {
         // WebKit does its work on GTK's loop, which nothing else is stepping.
         web::pump();
 
+        if self.copy_pending > 0 {
+            self.copy_pending -= 1;
+            if self.copy_pending == 0
+                && let Some(text) = self.web.clipboard_text()
+            {
+                ctx.copy_text(text);
+            }
+            ctx.request_repaint();
+        }
         self.take_handoffs(ctx);
         for done in self.jobs.drain() {
             self.absorb(done);
@@ -178,6 +187,11 @@ impl PostApp {
                 if !self.connecting {
                     self.start(Job::AddAccount);
                 }
+            }
+            Command::Copy => {
+                self.web.copy();
+                // Give WebKit a few pumps to land it, then re-own it.
+                self.copy_pending = 3;
             }
             Command::ShortcutHelp => self.shortcuts = !self.shortcuts,
             Command::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),

@@ -102,7 +102,8 @@ pub fn page(html: &str, bg: [u8; 3], fg: [u8; 3], link: [u8; 3]) -> String {
          font:14px/1.5 system-ui,sans-serif;overflow-wrap:break-word}}\
          body{{padding:14px}}\
          a{{color:{link}}} img{{max-width:100%;height:auto}} \
-         table{{max-width:100%}}</style></head><body>{before}{after}</body></html>",
+         table{{max-width:100%}} \
+         ::selection{{background:{link};color:#fff}}</style></head><body>{before}{after}</body></html>",
         bg = hex(bg),
         fg = hex(fg),
         link = hex(link),
@@ -378,6 +379,58 @@ mod real {
 
         pub fn placed(&self) -> Placed {
             self.placed
+        }
+
+        /// Copies the body's current selection to the clipboard — WebKit
+        /// holds the selection, so WebKit does the copying.
+        pub fn copy(&self) {
+            use webkit2gtk::WebViewExt;
+            use wry::WebViewExtUnix;
+            if let Some(view) = &self.view {
+                view.webview().execute_editing_command("Copy");
+            }
+        }
+
+        /// What the clipboard holds, once WebKit's copy has landed there.
+        pub fn clipboard_text(&self) -> Option<String> {
+            let cb = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+            cb.wait_for_text().map(|t| t.to_string())
+        }
+
+        /// Scrolls the body by `dy` physical pixels: a wheel event built by
+        /// hand and dispatched to the webview, because wry offers no scroll
+        /// call and the page runs no scripts. Smooth deltas are in notches,
+        /// about forty pixels each.
+        pub fn scroll(&self, dy: f32) {
+            use gtk::glib::translate::ToGlibPtr;
+            use gtk::prelude::WidgetExt;
+            use wry::WebViewExtUnix;
+
+            let Some(view) = &self.view else { return };
+            let widget = view.webview();
+            let Some(win) = widget.window() else { return };
+            use gtk::prelude::SeatExt;
+            let device: Option<gtk::gdk::Device> = win
+                .display()
+                .default_seat()
+                .and_then(|seat| SeatExt::pointer(&seat));
+            unsafe {
+                use gtk::gdk::ffi as gdk;
+                let mut ev: gdk::GdkEventScroll = std::mem::zeroed();
+                ev.type_ = gdk::GDK_SCROLL;
+                ev.window = win.to_glib_none().0;
+                ev.send_event = 1;
+                ev.time = gdk::GDK_CURRENT_TIME as u32;
+                ev.x = 1.0;
+                ev.y = 1.0;
+                ev.direction = gdk::GDK_SCROLL_SMOOTH;
+                ev.delta_y = (dy / 40.0) as f64;
+                let ptr = &mut ev as *mut gdk::GdkEventScroll as *mut gdk::GdkEvent;
+                if let Some(device) = &device {
+                    gdk::gdk_event_set_device(ptr, device.to_glib_none().0);
+                }
+                gtk::ffi::gtk_main_do_event(ptr);
+            }
         }
 
         /// True when this body is already on screen.
@@ -1064,6 +1117,12 @@ mod real {
         pub fn set_shown(&mut self, _shown: bool) {}
 
         pub fn place(&mut self, _at: Px) {}
+
+        pub fn copy(&self) {}
+
+        pub fn clipboard_text(&self) -> Option<String> {
+            None
+        }
 
         pub fn hide(&mut self) {
             self.showing = None;

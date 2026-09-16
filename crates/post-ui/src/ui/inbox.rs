@@ -155,7 +155,7 @@ fn message_row(ui: &mut eframe::egui::Ui, row: &Thread, focused: bool, follow: b
     let wrote = weighted(
         &ui.painter().with_clip_rect(sender),
         Pos2::new(sender.min.x, top),
-        &row.who,
+        name_of(&row.who),
         13.5,
         name_color,
         row.unread,
@@ -271,4 +271,20 @@ fn count_chip(painter: &Painter, at: Pos2, count: usize, color: Color32) {
         eframe::egui::StrokeKind::Inside,
     );
     painter.text(chip.center(), Align2::CENTER_CENTER, text, font, color);
+}
+
+/// The sender as a person: the display name when the address carries one,
+/// the address alone otherwise. Nobody needs the email next to the name.
+fn name_of(who: &str) -> &str {
+    let name = who.split('<').next().unwrap_or(who).trim();
+    let name = name.trim_matches('"').trim();
+    // The self-thread line reads "To <address>" — keep it whole.
+    if name == "To" {
+        return who;
+    }
+    if name.is_empty() {
+        who.trim_start_matches('<').trim_end_matches('>').trim()
+    } else {
+        name
+    }
 }

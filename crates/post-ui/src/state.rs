@@ -48,6 +48,9 @@ pub struct PostApp {
     /// True between the send key and the answer: the draft is being rewritten
     /// with what was typed, and then sent.
     pub sending: bool,
+    /// Frames left until a WebKit copy is re-owned by egui's clipboard
+    /// thread, so pastes stop depending on our GTK pump.
+    pub copy_pending: u8,
     /// A swipe-back in the making: horizontal scroll accumulated across
     /// frames, and when it last grew. Cleared on pause or reversal.
     pub swipe: f32,
@@ -112,6 +115,7 @@ impl PostApp {
             body: None,
             draft: None,
             compose: String::new(),
+            copy_pending: 0,
             swipe: 0.0,
             swipe_at: 0.0,
             to: String::new(),
