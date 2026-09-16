@@ -48,6 +48,10 @@ pub struct PostApp {
     /// True between the send key and the answer: the draft is being rewritten
     /// with what was typed, and then sent.
     pub sending: bool,
+    /// A swipe-back in the making: horizontal scroll accumulated across
+    /// frames, and when it last grew. Cleared on pause or reversal.
+    pub swipe: f32,
+    pub swipe_at: f64,
     /// Which row the keyboard is on, in the inbox.
     pub focus: usize,
     /// Which stop the keyboard is on, in the account list: one per account,
@@ -94,7 +98,11 @@ impl PostApp {
     /// A window showing `view`, with nothing loaded yet.
     pub fn new(view: View) -> PostApp {
         let (keymap, warnings) = crate::keymap::load();
-        let web = web::Body::new(pane_keys(&keymap));
+        let web = web::Body::new(
+            pane_keys(&keymap),
+            chord_for(&keymap, Command::Back),
+            chord_for(&keymap, Command::Open),
+        );
         PostApp {
             nav: Nav::of(view),
             keymap,
@@ -104,6 +112,8 @@ impl PostApp {
             body: None,
             draft: None,
             compose: String::new(),
+            swipe: 0.0,
+            swipe_at: 0.0,
             to: String::new(),
             cc: String::new(),
             sending: false,
@@ -447,6 +457,16 @@ fn pane_keys(keymap: &Keymap) -> Vec<eframe::egui::KeyboardShortcut> {
         .filter(|(_, cmd)| matches!(cmd, Command::Back | Command::Delete | Command::Reply))
         .map(|(chord, _)| *chord)
         .collect()
+}
+
+/// The first chord the keymap binds to `cmd` — what the pane sends when a
+/// mouse button or a swipe means that command.
+fn chord_for(keymap: &Keymap, cmd: Command) -> Option<eframe::egui::KeyboardShortcut> {
+    keymap
+        .bindings
+        .iter()
+        .find(|(_, bound)| *bound == cmd)
+        .map(|(chord, _)| *chord)
 }
 
 /// One message's body, as the pane takes it.

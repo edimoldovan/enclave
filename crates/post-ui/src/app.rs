@@ -109,6 +109,29 @@ impl PostApp {
                     cmds.push(*cmd);
                 }
             }
+            // The mouse's own back/forward buttons.
+            if input.pointer.button_pressed(eframe::egui::PointerButton::Extra1) {
+                cmds.push(Command::Back);
+            }
+            if input.pointer.button_pressed(eframe::egui::PointerButton::Extra2) {
+                cmds.push(Command::Open);
+            }
+            // Two-finger swipe right = back, the way browsers read it: the
+            // horizontal scroll a view with nothing to scroll sideways
+            // receives, accumulated until it is unmistakably a swipe.
+            let d = input.raw_scroll_delta;
+            if d.x.abs() > d.y.abs() && d.x != 0.0 {
+                let now = input.time;
+                if now - self.swipe_at > 0.4 || self.swipe * d.x < 0.0 {
+                    self.swipe = 0.0;
+                }
+                self.swipe += d.x;
+                self.swipe_at = now;
+                if self.swipe > 120.0 {
+                    self.swipe = 0.0;
+                    cmds.push(Command::Back);
+                }
+            }
         });
         cmds
     }
@@ -285,7 +308,9 @@ impl PostApp {
             return;
         }
         if self.nav.top().message().is_some() {
-            self.step_conversation(by);
+            // Arrows read the message: they scroll. The conversation is
+            // walked by clicking its lines.
+            self.body_scroll += by as f32 * BODY_STEP;
         } else if self.nav.top() == &View::Accounts {
             self.move_account_focus(by);
         } else {

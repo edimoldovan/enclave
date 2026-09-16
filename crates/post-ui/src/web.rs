@@ -334,20 +334,28 @@ mod real {
         rule: Rc<OnlyTheDocument>,
         /// The chords the pane hands back instead of keeping.
         forward: Vec<KeyboardShortcut>,
+        /// What the mouse's back/forward buttons and a swipe mean here, as
+        /// the chords the keymap binds — sent up the same channel.
+        back: Option<KeyboardShortcut>,
+        open: Option<KeyboardShortcut>,
         keys_tx: Sender<KeyboardShortcut>,
         keys_rx: Receiver<KeyboardShortcut>,
     }
 
     impl Default for Body {
         fn default() -> Self {
-            Self::new(Vec::new())
+            Self::new(Vec::new(), None, None)
         }
     }
 
     impl Body {
         /// A pane that hands `forward` back to the window and leaves every
         /// other key to WebKit.
-        pub fn new(forward: Vec<KeyboardShortcut>) -> Body {
+        pub fn new(
+            forward: Vec<KeyboardShortcut>,
+            back: Option<KeyboardShortcut>,
+            open: Option<KeyboardShortcut>,
+        ) -> Body {
             let (keys_tx, keys_rx) = std::sync::mpsc::channel();
             Body {
                 view: None,
@@ -361,6 +369,8 @@ mod real {
                 visible: false,
                 rule: Rc::new(OnlyTheDocument::default()),
                 forward,
+                back,
+                open,
                 keys_tx,
                 keys_rx,
             }
@@ -458,7 +468,7 @@ mod real {
             }
             #[cfg(target_os = "linux")]
             if let Some(view) = &self.view {
-                watch_keys(view, self.forward.clone(), self.keys_tx.clone());
+                watch_keys(view, self.forward.clone(), self.back, self.open, self.keys_tx.clone());
             }
         }
 
@@ -677,6 +687,24 @@ mod real {
         1.0
     }
 
+    /// Opens a clicked link in the default browser — and only real web links,
+    /// so a message cannot point the system at files or odd schemes.
+    fn to_browser(url: &str) {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(not(target_os = "macos"))]
+        let opener = "xdg-open";
+        let _ = std::process::Command::new(opener)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
     /// The shared rules: a message is a document to look at, never a program to
     /// run and never a page to navigate.
     fn locked_down(html: &str, rule: Rc<OnlyTheDocument>) -> WebViewBuilder<'_> {
@@ -685,11 +713,20 @@ mod real {
             .with_javascript_disabled()
             .with_transparent(false)
             .with_back_forward_navigation_gestures(false)
-            // A link in a message goes nowhere from here: no navigation past
-            // the load this view was asked for, and no window opened on its
-            // behalf.
-            .with_navigation_handler(move |_url| rule.allows())
-            .with_new_window_req_handler(|_url, _features| NewWindowResponse::Deny)
+            // A link in a message never navigates this pane: past the load
+            // the view was asked for, an http(s) target goes to the default
+            // browser instead, and no window is opened on the pane's behalf.
+            .with_navigation_handler(move |url| {
+                if rule.allows() {
+                    return true;
+                }
+                to_browser(&url);
+                false
+            })
+            .with_new_window_req_handler(|url, _features| {
+                to_browser(&url);
+                NewWindowResponse::Deny
+            })
     }
 
     /// Hands the window back the keys it has bindings for, and leaves WebKit
@@ -706,6 +743,8 @@ mod real {
     fn watch_keys(
         view: &WebView,
         forward: Vec<KeyboardShortcut>,
+        back: Option<KeyboardShortcut>,
+        open: Option<KeyboardShortcut>,
         keys: Sender<KeyboardShortcut>,
     ) {
         use gtk::glib::Propagation;
@@ -716,6 +755,7 @@ mod real {
         // Keys arrive at the window the view is in and are handed down from
         // there, so that is where they can still be taken.
         let target = widget.toplevel().unwrap_or(widget);
+        let typed = keys.clone();
         target.connect_key_press_event(move |_widget, event| {
             let state = event.state();
             let pressed = super::chord(
@@ -726,12 +766,64 @@ mod real {
             );
             match pressed {
                 Some(chord) if forward.contains(&chord) => {
-                    let _ = keys.send(chord);
+                    let _ = typed.send(chord);
                     Propagation::Stop
                 }
                 _ => Propagation::Proceed,
             }
         });
+        // The mouse's back/forward buttons and swipes. WebKit consumes
+        // pointer events at an inner widget, so plain handlers never see
+        // them — these are capture-phase controllers on the toplevel, which
+        // run before anything below can eat the event.
+        {
+            use gtk::prelude::{EventControllerExt, GestureExt, GestureSingleExt};
+            let clicks = gtk::GestureMultiPress::new(&target);
+            clicks.set_propagation_phase(gtk::PropagationPhase::Capture);
+            clicks.set_button(0);
+            let buttons = keys.clone();
+            clicks.connect_pressed(move |gesture, _n, _x, _y| {
+                let sent = match gesture.current_button() {
+                    8 => back,
+                    9 => open,
+                    _ => None,
+                };
+                if let Some(chord) = sent {
+                    let _ = buttons.send(chord);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                }
+            });
+            std::mem::forget(clicks);
+        }
+        // Touchpad swipes arrive as scroll events, and gtk3's bindings have
+        // no capture controller for those — so they are read at the door:
+        // GDK's global event handler sees every event before dispatch.
+        if let Some(chord) = back {
+            use std::cell::Cell;
+            let swipes = keys.clone();
+            let sum = Cell::new(0f64);
+            let last = Cell::new(0u32);
+            gtk::gdk::Event::set_handler(Some(move |event: &mut gtk::gdk::Event| {
+                if event.event_type() == gtk::gdk::EventType::Scroll {
+                    if let Some((dx, dy)) = event.scroll_deltas() {
+                        if dx.abs() > dy.abs() && dx != 0.0 {
+                            let now = event.time();
+                            if now.wrapping_sub(last.get()) > 400 || sum.get() * dx < 0.0 {
+                                sum.set(0.0);
+                            }
+                            // A two-finger swipe right arrives as negative dx.
+                            sum.set(sum.get() - dx);
+                            last.set(now);
+                            if sum.get() > 6.0 {
+                                sum.set(0.0);
+                                let _ = swipes.send(chord);
+                            }
+                        }
+                    }
+                }
+                gtk::main_do_event(event);
+            }));
+        }
     }
 
     /// The body as a child view over the detail pane. X11 only — on Wayland
@@ -933,7 +1025,11 @@ mod real {
     }
 
     impl Body {
-        pub fn new(_forward: Vec<KeyboardShortcut>) -> Body {
+        pub fn new(
+            _forward: Vec<KeyboardShortcut>,
+            _back: Option<KeyboardShortcut>,
+            _open: Option<KeyboardShortcut>,
+        ) -> Body {
             Body::default()
         }
 

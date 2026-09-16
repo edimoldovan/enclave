@@ -78,11 +78,12 @@ impl PostApp {
                     loading_row(ui);
                 }
             });
-            // The wheel arriving at the end of the list is the ask for the page
-            // after it — but only where there was something to scroll.
+            // The wheel arriving at the end of the list is the ask for the
+            // page after it — and a list too short to fill the viewport asks
+            // by itself, until the window is full or the mailbox is out.
             let seen = out.state.offset.y + out.inner_rect.height();
-            near_end = out.content_size.y > out.inner_rect.height()
-                && out.content_size.y - seen < NEAR_END;
+            near_end = out.content_size.y <= out.inner_rect.height()
+                || out.content_size.y - seen < NEAR_END;
         });
 
         if near_end {
